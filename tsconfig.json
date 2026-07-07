@@ -3,11 +3,12 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
     "lib": ["ESNext"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "types": []
   },
-  "include": [".opencode/plugin/debate.ts"]
+  "include": ["src/debate.ts", ".opencode/plugin/debate.ts"]
 }

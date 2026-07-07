@@ -6,7 +6,9 @@ permission:
   edit:
     "*": "deny"
     "docs/debates/**": "allow"
-  bash: ask
+  bash:
+    "*": "ask"
+    "date -u +%Y-%m-%dT%H-%M-%SZ": "allow"
   question: allow
   task:
     "*": "deny"
@@ -37,10 +39,9 @@ Request handling:
 Participants:
 
 - Use exactly three neutral participants: `Participant 1`, `Participant 2`, and `Participant 3`.
-- Select the participant set from the parsed request's `Participant set:` line. When the request does not name a set, use `default`.
-- `default` set: `Participant 1` uses the `debate-openai` subagent type, `Participant 2` uses the `debate-opus` subagent type, and `Participant 3` uses the `debate-glm` subagent type.
-- `cheap` set: `Participant 1` uses the `debate-deepseek` subagent type, `Participant 2` uses the `debate-glm` subagent type, and `Participant 3` uses the `debate-qwen` subagent type.
-- Use the same three subagent types for every round of a single debate; do not mix sets mid-debate.
+- Use `Participant 1`, `Participant 2`, and `Participant 3` from the parsed request's `Resolved participants:` list as the authoritative mapping to subagent types.
+- The `Participant set:` line is metadata only; do not infer or remap participants from the set name.
+- Use the same three resolved subagent types for every round of a single debate; do not mix sets mid-debate.
 - Participant model IDs and variants are defined in the participant agent frontmatter.
 - Do not assign advocate, critic, pro, con, reviewer, or other asymmetric roles.
 - Start each participant with `task` during round 1 using the participant's assigned `subagent_type`, and record the returned `task_id`.
@@ -61,7 +62,7 @@ State to maintain in your current conversation context:
 
 Round 1 flow:
 
-- Start `Participant 1`, `Participant 2`, and `Participant 3` with `task` using the `subagent_type` values for the selected set (see the Participants section): `default` → `debate-openai`, `debate-opus`, `debate-glm`; `cheap` → `debate-deepseek`, `debate-glm`, `debate-qwen`.
+- Start `Participant 1`, `Participant 2`, and `Participant 3` with `task` using the `subagent_type` values from the parsed request's `Resolved participants:` list.
 - Give all participants the same original topic, wrapped in the tokenised topic delimiters shown in the template below (topic text extracted verbatim from the parsed request).
 - Ask each participant to answer independently.
 - Do not ask any participant whether consensus exists.
@@ -153,9 +154,9 @@ Final synthesis:
 
 Transcript persistence:
 
-- After producing the final synthesis, write a transcript to `docs/debates/<UTC-ISO8601-timestamp>-<slug>.md` where `<slug>` is a short kebab-case slug derived from the topic. Your `edit` permission allows writing only under `docs/debates/`; create the directory first if it does not exist.
+- After producing the final synthesis, create `docs/debates/` if it does not already exist. Get the timestamp by running exactly `date -u +%Y-%m-%dT%H-%M-%SZ`, then write a transcript to `docs/debates/<timestamp>-<slug>.md` where `<slug>` is a short kebab-case slug derived from the topic. Your `edit` permission allows writing only under `docs/debates/`.
 - The transcript must contain: the topic, the configured maximum rounds, each participant's turn per round, any recorded JSON parsing problems, and the final synthesis.
-- Also write a self-contained HTML transcript to `docs/debates/<UTC-ISO8601-timestamp>-<slug>.html` using the same table-style format as existing files in `docs/debates/`.
+- Also write a self-contained HTML transcript to `docs/debates/<timestamp>-<slug>.html` using the same table-style format as existing files in `docs/debates/`.
 - The HTML transcript must include inline CSS, a metadata block, a highlighted topic box, a table where each row is a round and each participant has one column, `consensus_reached` and `recommend_stopping` badges for round 2 and later, any extension decisions, any JSON parsing problems, and a final summary section.
 - Before inserting any dynamic content into HTML, escape `&` as `&amp;`, `<` as `&lt;`, `>` as `&gt;`, `"` as `&quot;`, and `'` as `&#39;`. Dynamic content includes topic text, participant turns, parsing problems, extension notes, and final synthesis text.
 - Use this HTML structure as the baseline and fill in escaped content:

@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { parseDebateArguments, trimSurroundingQuotes, validPrompt, errorPrompt, replaceParts } from "../.opencode/plugin/debate.ts"
+import { readFileSync } from "node:fs"
+import { parseDebateArguments, trimSurroundingQuotes, validPrompt, errorPrompt, replaceParts } from "../src/debate.ts"
 
 test("default rounds when --rounds absent", () => {
   const r = parseDebateArguments("compare two options")
@@ -167,13 +168,27 @@ test("-- separator treats --set:cheap as part of the topic", () => {
 test("validPrompt emits the cheap participant set", () => {
   const p = validPrompt("my topic", 5, "cheap", "abc123")
   assert.match(p, /Participant set: cheap/)
-  assert.match(p, /Use the participant set named "cheap"/)
+  assert.match(p, /Participant 1: debate-glm/)
+  assert.match(p, /Participant 2: debate-qwen/)
+  assert.match(p, /Participant 3: debate-deepseek/)
 })
 
 test("validPrompt emits the default participant set by default", () => {
   const p = validPrompt("my topic", 5, "default", "abc123")
   assert.match(p, /Participant set: default/)
-  assert.match(p, /Use the participant set named "default"/)
+  assert.match(p, /Participant 1: debate-glm/)
+  assert.match(p, /Participant 2: debate-opus/)
+  assert.match(p, /Participant 3: debate-openai/)
+})
+
+test("debate agent consumes resolved participants without owning set order", () => {
+  const prompt = readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8")
+  assert.match(prompt, /Resolved participants/)
+  assert.match(prompt, /Participant 1`, `Participant 2`, and `Participant 3` from the parsed request/)
+  assert.doesNotMatch(prompt, /`default` set: `Participant 1` uses the `debate-/)
+  assert.doesNotMatch(prompt, /`cheap` set: `Participant 1` uses the `debate-/)
+  assert.doesNotMatch(prompt, /`default` → `debate-/)
+  assert.doesNotMatch(prompt, /`cheap` → `debate-/)
 })
 
 test("-- separator treats the rest as the topic", () => {

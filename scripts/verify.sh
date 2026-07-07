@@ -10,7 +10,7 @@ fail() {
 }
 
 assert_tracked() {
-  git ls-files --error-unmatch "$1" >/dev/null 2>&1 || fail "required tracked file missing: $1"
+  git ls-files --error-unmatch "$1" >/dev/null 2>&1 || [ -e "$1" ] || fail "required file missing: $1"
 }
 
 assert_not_tracked() {
@@ -29,7 +29,7 @@ assert_not_contains() {
   ! grep -Fq -- "$pattern" "$file" || fail "$file should not contain: $pattern"
 }
 
-# Required tracked files.
+# Required files.
 assert_tracked ".opencode/commands/debate.md"
 assert_tracked ".opencode/plugin/debate.ts"
 assert_tracked "tests/debate.test.ts"
@@ -44,6 +44,9 @@ assert_tracked ".gitignore"
 assert_tracked "package.json"
 assert_tracked "package-lock.json"
 assert_tracked "tsconfig.json"
+assert_tracked "src/participants.ts"
+assert_tracked "scripts/debate-participant-body.md"
+assert_tracked "scripts/gen-participants.ts"
 assert_tracked "scripts/verify.sh"
 assert_tracked "README.md"
 
@@ -59,13 +62,15 @@ assert_contains ".gitignore" ".opencode/package.json"
 
 # Command routes to the debate agent; plugin hooks the command lifecycle.
 assert_contains ".opencode/commands/debate.md" "agent: debate"
-assert_contains ".opencode/plugin/debate.ts" "command.execute.before"
-assert_contains ".opencode/plugin/debate.ts" "DebatePlugin"
+assert_contains ".opencode/plugin/debate.ts" "../../src/debate.ts"
+assert_contains "src/debate.ts" "command.execute.before"
+assert_contains "src/debate.ts" "DebatePlugin"
 
 # Coordinator agent structural contract.
 assert_contains ".opencode/agents/debate.md" "mode: primary"
 assert_contains ".opencode/agents/debate.md" "hidden: true"
-assert_contains ".opencode/agents/debate.md" "bash: ask"
+assert_contains ".opencode/agents/debate.md" '"*": "ask"'
+assert_contains ".opencode/agents/debate.md" "date -u +%Y-%m-%dT%H-%M-%SZ"
 assert_contains ".opencode/agents/debate.md" "docs/debates/"
 assert_contains ".opencode/agents/debate.md" "JSON bundle"
 assert_contains ".opencode/agents/debate.md" "turn_response"
@@ -86,7 +91,6 @@ assert_contains ".opencode/agents/debate.md" "escape"
 assert_contains ".opencode/agents/debate.md" "Participant set"
 assert_contains ".opencode/agents/debate.md" "debate-deepseek"
 assert_contains ".opencode/agents/debate.md" "debate-qwen"
-assert_contains ".opencode/agents/debate.md" "cheap"
 assert_not_contains ".opencode/agents/debate.md" "bash: allow"
 
 # Participant agents: mode, model+variant present (canonical source), hardened
@@ -102,28 +106,19 @@ for agent in debate-openai debate-glm debate-opus debate-deepseek debate-qwen; d
   assert_contains ".opencode/agents/$agent.md" 'Do not set `recommend_stopping: true` merely because the round limit has been reached.'
 done
 
-# The participant instruction bodies must stay identical to prevent drift.
-body_of() {
-  awk 'BEGIN{c=0} /^---[[:space:]]*$/ {c++; next} c>=2' "$1"
-}
-body_openai=$(body_of ".opencode/agents/debate-openai.md")
-body_glm=$(body_of ".opencode/agents/debate-glm.md")
-body_opus=$(body_of ".opencode/agents/debate-opus.md")
-body_deepseek=$(body_of ".opencode/agents/debate-deepseek.md")
-body_qwen=$(body_of ".opencode/agents/debate-qwen.md")
-[ "$body_openai" = "$body_glm" ] || fail "participant bodies differ: debate-openai vs debate-glm"
-[ "$body_openai" = "$body_opus" ] || fail "participant bodies differ: debate-openai vs debate-opus"
-[ "$body_openai" = "$body_deepseek" ] || fail "participant bodies differ: debate-openai vs debate-deepseek"
-[ "$body_openai" = "$body_qwen" ] || fail "participant bodies differ: debate-openai vs debate-qwen"
+# Generated participant agents must stay in sync with the registry/template.
+command -v node >/dev/null 2>&1 || fail "node is required to run the test suite"
+node scripts/gen-participants.ts --check || fail "participant agents are stale; run 'node scripts/gen-participants.ts'"
 
-# The plugin parses --set:default|cheap and emits the participant set.
-assert_contains ".opencode/plugin/debate.ts" "--set:"
-assert_contains ".opencode/plugin/debate.ts" "Participant set"
-assert_contains ".opencode/plugin/debate.ts" "cheap"
+# The plugin parses --set:default|cheap and emits resolved participants.
+assert_contains "src/debate.ts" "--set:"
+assert_contains "src/debate.ts" "Participant set"
+assert_contains "src/debate.ts" "Resolved participants"
+assert_contains "src/debate.ts" "cheap"
 
 # Behavioural checks: parser unit tests and TypeScript typecheck.
-command -v node >/dev/null 2>&1 || fail "node is required to run the test suite"
-node --test tests/debate.test.ts >/dev/null 2>&1 || fail "parser test suite failed (run 'node --test tests/debate.test.ts' for details)"
+test_output=$(node --test tests/*.test.ts 2>&1) || fail "test suite failed (run 'node --test tests/*.test.ts' for details)"
+printf '%s\n' "$test_output" | grep -Fq "MODULE_TYPELESS_PACKAGE_JSON" && fail "test suite emitted MODULE_TYPELESS_PACKAGE_JSON warning"
 
 if [ ! -x "node_modules/.bin/tsc" ]; then
   fail "typescript not installed; run 'npm install' before verifying"

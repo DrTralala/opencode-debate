@@ -5,7 +5,8 @@ This repo defines a project-level OpenCode `/debate` command. The command routes
 ## Files
 
 - `.opencode/commands/debate.md`: routes `/debate` to the project Debate agent.
-- `.opencode/plugin/debate.ts`: parses and validates `/debate` command arguments before the agent runs.
+- `.opencode/plugin/debate.ts`: OpenCode plugin entrypoint that re-exports the project implementation.
+- `src/debate.ts`: parses and validates `/debate` command arguments and emits the resolved participant order before the agent runs.
 - `tests/debate.test.ts`: behavioural unit tests for the argument parser, prompt generation, and part replacement.
 - `.opencode/agents/debate.md`: authoritative behaviour definition for orchestration, participant subagents, transcript handling, early stopping, and final synthesis.
 - `.opencode/agents/debate-openai.md`: neutral participant agent (default set); model ID and variant live in frontmatter.
@@ -13,6 +14,9 @@ This repo defines a project-level OpenCode `/debate` command. The command routes
 - `.opencode/agents/debate-opus.md`: neutral participant agent (default set); model ID and variant live in frontmatter.
 - `.opencode/agents/debate-deepseek.md`: neutral participant agent (cheap set); model ID and variant live in frontmatter.
 - `.opencode/agents/debate-qwen.md`: neutral participant agent (cheap set); model ID and variant live in frontmatter.
+- `src/participants.ts`: canonical participant registry and participant-set ordering.
+- `scripts/debate-participant-body.md`: shared participant-agent prompt body.
+- `scripts/gen-participants.ts`: renders `.opencode/agents/debate-*.md` from the registry and shared body.
 - `docs/superpowers/specs/2026-07-05-debate-agent-design.md`: design rationale.
 - `docs/superpowers/plans/2026-07-05-debate-agent.md`: original implementation plan.
 - `scripts/verify.sh`: static repository contract checks plus the test suite and TypeScript typecheck.
@@ -22,8 +26,8 @@ This repo defines a project-level OpenCode `/debate` command. The command routes
 
 1. Run `/debate <topic>` from this repo.
 2. The slash command routes to the hidden `debate` agent.
-3. `.opencode/plugin/debate.ts` parses any leading `--rounds <number>` and `--set:default|cheap` flags and validates unsupported leading options.
-4. The plugin replaces the command prompt with a canonical parsed request containing the topic, maximum round count, and participant set.
+3. `src/debate.ts`, loaded through `.opencode/plugin/debate.ts`, parses any leading `--rounds <number>` and `--set:default|cheap` flags and validates unsupported leading options.
+4. The plugin replaces the command prompt with a canonical parsed request containing the topic, maximum round count, participant set, and resolved ordered participants.
 5. The Debate agent coordinates subagents only; it does not re-parse slash-command flags.
 6. In round 1, it starts three neutral participant subagents and gives each the same topic.
 7. In later rounds, it calls each participant again with its `task_id` and gives each a fully self-contained prompt (the original topic, the participant's own previous turn, and the other participants' previous turns), so continuity does not depend on the runtime resuming prior context.
@@ -41,15 +45,21 @@ The Debate agent cannot edit files except debate transcripts under `docs/debates
 The `/debate` command supports two participant sets selected with `--set`:
 
 - `default` set (used when `--set` is omitted):
-  - `Participant 1`: `debate-openai` (OpenAI GPT-5.5).
+  - `Participant 1`: `debate-glm` (GLM-5.2 from OpenCode Go).
   - `Participant 2`: `debate-opus` (Claude Opus 4.8 through OpenRouter).
-  - `Participant 3`: `debate-glm` (GLM-5.2 from OpenCode Go).
+  - `Participant 3`: `debate-openai` (OpenAI GPT-5.5).
 - `cheap` set (`--set:cheap`):
-  - `Participant 1`: `debate-deepseek` (Deepseek V4 Pro from OpenCode Go).
-  - `Participant 2`: `debate-glm` (GLM-5.2 from OpenCode Go).
-  - `Participant 3`: `debate-qwen` (Qwen 3.7 Max from OpenCode Go).
+  - `Participant 1`: `debate-glm` (GLM-5.2 from OpenCode Go).
+  - `Participant 2`: `debate-qwen` (Qwen 3.7 Max from OpenCode Go).
+  - `Participant 3`: `debate-deepseek` (Deepseek V4 Pro from OpenCode Go).
 
-The concrete model IDs and variants are intentionally kept in the participant agent frontmatter so model changes have one canonical source.
+The canonical participant metadata and set ordering live in `src/participants.ts`. The concrete `.opencode/agents/debate-*.md` files are generated from that registry plus `scripts/debate-participant-body.md` so OpenCode can load self-contained agent definitions without requiring five manual prompt edits.
+
+After changing participant metadata or the shared body, regenerate the checked-in agent files:
+
+```sh
+node scripts/gen-participants.ts
+```
 
 Participants may gather context with read-only tools for higher-quality answers, but do not edit files, run mutating commands, or spawn subagents. Participant `bash` is restricted to a read-only allowlist (file inspection commands such as `cat`, `grep`, `ls`, `git status`, `git diff`); all other shell commands are denied. Each round, participants return a JSON object (`turn`, plus `consensus_reached` and `recommend_stopping` from round 2). Participants treat `recommend_stopping: false` on the final configured round as a signal that the user may be offered additional rounds, not as an error or automatic stop.
 
@@ -65,7 +75,7 @@ Participants may gather context with read-only tools for higher-quality answers,
 Supported leading flags:
 
 - `--rounds <number>`: maximum debate rounds. Defaults to `3` and must be an integer between 1 and 10. `--rounds=N` is also accepted. `--rounds` may only be specified once.
-- `--set:default|cheap`: participant set. `default` uses `debate-openai`, `debate-opus`, and `debate-glm`; `cheap` uses `debate-deepseek`, `debate-glm`, and `debate-qwen`. Defaults to `default`. `--set` may only be specified once.
+- `--set:default|cheap`: participant set. `default` uses `debate-glm`, `debate-opus`, and `debate-openai`; `cheap` uses `debate-glm`, `debate-qwen`, and `debate-deepseek`. Defaults to `default`. `--set` may only be specified once.
 - `--` ends option parsing; all following text is treated as the topic (useful for topics that begin with `--`).
 - Options are recognised only before the topic begins. After the first non-option token, all remaining text is part of the topic.
 
@@ -98,8 +108,8 @@ sh scripts/verify.sh
 
 `scripts/verify.sh` runs three layers of checks:
 
-1. Static contract checks: required files are tracked, local-only artefacts (`.opencode/package*.json`, `node_modules`) are not tracked, command routing and agent frontmatter are well-formed, and the three participant instruction bodies stay identical.
-2. Behavioural unit tests: `node --test tests/debate.test.ts` exercises the argument parser, prompt generation, and part replacement.
+1. Static contract checks: required files exist, local-only artefacts (`.opencode/package*.json`, `node_modules`) are not tracked, command routing and agent frontmatter are well-formed, and generated participant agents are up to date with the registry/template.
+2. Behavioural unit tests: `node --test tests/*.test.ts` exercises the argument parser, prompt generation, part replacement, and participant generation.
 3. TypeScript typecheck: `tsc --noEmit` typechecks `.opencode/plugin/debate.ts` against the installed `@opencode-ai/plugin` and `@opencode-ai/sdk` types.
 
 Node.js >= 24 is required (native TypeScript support for running `.ts` tests directly).
