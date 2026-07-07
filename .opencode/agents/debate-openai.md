@@ -1,8 +1,8 @@
 ---
-description: Neutral debate participant using Claude Opus 4.8 through OpenRouter
+description: Neutral debate participant using OpenAI GPT-5.5
 mode: subagent
-model: openrouter/anthropic/claude-opus-4.8
-variant: high
+model: openai/gpt-5.5
+variant: xhigh
 permission:
   edit: deny
   task: deny

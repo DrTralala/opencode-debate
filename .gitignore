@@ -1,6 +1,4 @@
 node_modules/
-package-lock.json
-bun.lock
 .opencode/node_modules/
 .opencode/package.json
 .opencode/package-lock.json

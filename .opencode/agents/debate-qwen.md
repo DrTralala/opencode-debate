@@ -1,8 +1,8 @@
 ---
-description: Neutral debate participant using Claude Opus 4.8 through OpenRouter
+description: Neutral debate participant using Qwen 3.7 Max from OpenCode Go
 mode: subagent
-model: openrouter/anthropic/claude-opus-4.8
-variant: high
+model: opencode-go/qwen3.7-max
+variant: max
 permission:
   edit: deny
   task: deny
