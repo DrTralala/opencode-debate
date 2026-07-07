@@ -75,6 +75,14 @@ assert_contains ".opencode/agents/debate.md" "If the maximum round count is 1"
 assert_contains ".opencode/agents/debate.md" "max_rounds"
 assert_contains ".opencode/agents/debate.md" "Do not run additional research"
 assert_contains ".opencode/agents/debate.md" "Transcript persistence"
+assert_contains ".opencode/agents/debate.md" "question: allow"
+assert_contains ".opencode/agents/debate.md" "Extension decision"
+assert_contains ".opencode/agents/debate.md" "effective_max_rounds"
+assert_contains ".opencode/agents/debate.md" "1 more round"
+assert_contains ".opencode/agents/debate.md" "3 more rounds"
+assert_contains ".opencode/agents/debate.md" "Stop and synthesise now"
+assert_contains ".opencode/agents/debate.md" ".html"
+assert_contains ".opencode/agents/debate.md" "escape"
 assert_contains ".opencode/agents/debate.md" "Participant set"
 assert_contains ".opencode/agents/debate.md" "debate-deepseek"
 assert_contains ".opencode/agents/debate.md" "debate-qwen"
@@ -91,6 +99,7 @@ for agent in debate-openai debate-glm debate-opus debate-deepseek debate-qwen; d
   assert_contains ".opencode/agents/$agent.md" "task: deny"
   assert_contains ".opencode/agents/$agent.md" "question: deny"
   assert_contains ".opencode/agents/$agent.md" "read-only"
+  assert_contains ".opencode/agents/$agent.md" 'Do not set `recommend_stopping: true` merely because the round limit has been reached.'
 done
 
 # The participant instruction bodies must stay identical to prevent drift.

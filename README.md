@@ -29,7 +29,8 @@ This repo defines a project-level OpenCode `/debate` command. The command routes
 7. In later rounds, it calls each participant again with its `task_id` and gives each a fully self-contained prompt (the original topic, the participant's own previous turn, and the other participants' previous turns), so continuity does not depend on the runtime resuming prior context.
 8. From round 2 onward, each participant reports whether consensus has been reached and whether it recommends stopping.
 9. The Debate agent stops early only when all participants report consensus and all recommend stopping.
-10. The Debate agent stores participant turns for continuity, writes a final synthesis in the current session, and persists a transcript under `docs/debates/`.
+10. If the configured round limit is reached and at least one participant reports `recommend_stopping: false`, the Debate agent asks whether to run `1 more round`, `3 more rounds`, or `Stop and synthesise now`.
+11. The Debate agent stores participant turns for continuity, writes a final synthesis in the current session, and persists Markdown and HTML transcripts under `docs/debates/`.
 
 No separate OpenCode sessions are used for debate turns.
 
@@ -50,7 +51,7 @@ The `/debate` command supports two participant sets selected with `--set`:
 
 The concrete model IDs and variants are intentionally kept in the participant agent frontmatter so model changes have one canonical source.
 
-Participants may gather context with read-only tools for higher-quality answers, but do not edit files, run mutating commands, or spawn subagents. Participant `bash` is restricted to a read-only allowlist (file inspection commands such as `cat`, `grep`, `ls`, `git status`, `git diff`); all other shell commands are denied. Each round, participants return a JSON object (`turn`, plus `consensus_reached` and `recommend_stopping` from round 2).
+Participants may gather context with read-only tools for higher-quality answers, but do not edit files, run mutating commands, or spawn subagents. Participant `bash` is restricted to a read-only allowlist (file inspection commands such as `cat`, `grep`, `ls`, `git status`, `git diff`); all other shell commands are denied. Each round, participants return a JSON object (`turn`, plus `consensus_reached` and `recommend_stopping` from round 2). Participants treat `recommend_stopping: false` on the final configured round as a signal that the user may be offered additional rounds, not as an error or automatic stop.
 
 ## Usage
 
@@ -74,12 +75,17 @@ Restart OpenCode after changing project plugin files so the plugin is reloaded.
 
 ## Output
 
-The Debate agent keeps participant turns out of the main session because they are available in the participant subagent sessions. The main session receives the final synthesis:
+The Debate agent keeps participant turns out of the main session because they are available in the participant subagent sessions and persisted transcripts. The main session receives the final synthesis:
 
 ```markdown
 ## Final Synthesis
 ...
 ```
+
+The agent writes both:
+
+- `docs/debates/<UTC-ISO8601-timestamp>-<slug>.md`: Markdown archive for grep and diffs.
+- `docs/debates/<UTC-ISO8601-timestamp>-<slug>.html`: self-contained HTML view using the table format from existing debate files, with rounds as rows, participants as columns, consensus/stop badges, parsing problems, extension notes, and the final summary.
 
 ## Verification
 
