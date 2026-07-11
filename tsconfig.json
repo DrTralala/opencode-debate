@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "types": []
   },
-  "include": ["src/debate.ts", ".opencode/plugin/debate.ts"]
+  "include": ["src/debate.ts", ".opencode/plugin/debate.ts", "index.ts"]
 }

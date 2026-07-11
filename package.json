@@ -1,11 +1,17 @@
 {
   "name": "opencode-debate",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./index.ts",
   "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.17.13",
+    "@opencode-ai/sdk": ">=1.17.13"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.17.13",
