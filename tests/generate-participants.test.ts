@@ -25,8 +25,8 @@ test("renderParticipantAgent combines participant metadata with the shared body"
 
   const rendered = renderParticipantAgent(participant, "Shared participant instructions.\n")
 
-  assert.match(rendered, /description: Neutral debate participant using OpenAI GPT-5\.5/)
-  assert.match(rendered, /model: openai\/gpt-5\.5/)
+  assert.match(rendered, /description: Neutral debate participant using OpenAI GPT-5.6 Sol Pro/)
+  assert.match(rendered, /model: openai\/gpt-5\.6-sol/)
   assert.match(rendered, /variant: xhigh/)
   assert.match(rendered, /edit: deny/)
   assert.match(rendered, /task: deny/)

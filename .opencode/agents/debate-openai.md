@@ -1,7 +1,7 @@
 ---
-description: Neutral debate participant using OpenAI GPT-5.5
+description: Neutral debate participant using OpenAI GPT-5.6 Sol Pro
 mode: subagent
-model: openai/gpt-5.5
+model: openai/gpt-5.6-sol
 variant: xhigh
 permission:
   edit: deny
