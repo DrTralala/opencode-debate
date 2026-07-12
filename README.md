@@ -1,67 +1,26 @@
 # OpenCode Debate Agent
 
-This repo defines a project-level OpenCode `/debate` command. The command routes to a hidden Debate agent that coordinates three neutral participant subagents inside the current OpenCode session.
-
-## Files
-
-- `.opencode/commands/debate.md`: routes `/debate` to the project Debate agent.
-- `.opencode/plugin/debate.ts`: OpenCode plugin entrypoint that re-exports the project implementation.
-- `src/debate.ts`: parses and validates `/debate` command arguments and emits the resolved participant order before the agent runs.
-- `tests/debate.test.ts`: behavioural unit tests for the argument parser, prompt generation, and part replacement.
-- `.opencode/agents/debate.md`: authoritative behaviour definition for orchestration, participant subagents, transcript handling, early stopping, and final synthesis.
-- `.opencode/agents/debate-openai.md`: neutral participant agent (default set); model ID and variant live in frontmatter.
-- `.opencode/agents/debate-glm.md`: neutral participant agent (default and cheap sets); model ID and variant live in frontmatter.
-- `.opencode/agents/debate-opus.md`: neutral participant agent (default set); model ID and variant live in frontmatter.
-- `.opencode/agents/debate-deepseek.md`: neutral participant agent (cheap set); model ID and variant live in frontmatter.
-- `.opencode/agents/debate-qwen.md`: neutral participant agent (cheap set); model ID and variant live in frontmatter.
-- `src/participants.ts`: canonical participant registry and participant-set ordering.
-- `scripts/debate-participant-body.md`: shared participant-agent prompt body.
-- `scripts/gen-participants.ts`: renders `.opencode/agents/debate-*.md` from the registry and shared body.
-- `docs/superpowers/specs/2026-07-05-debate-agent-design.md`: design rationale.
-- `docs/superpowers/plans/2026-07-05-debate-agent.md`: original implementation plan.
-- `scripts/verify.sh`: static repository contract checks plus the test suite and TypeScript typecheck.
-- `package.json`, `package-lock.json`, `tsconfig.json`: dev-only toolchain (TypeScript and OpenCode SDK types) for local typechecking and CI.
+A project-level OpenCode `/debate` command that coordinates three neutral participant subagents (each backed by a different LLM) to debate a topic across multiple rounds, then synthesises the results.
 
 ## How It Works
 
-1. Run `/debate <topic>` from this repo.
-2. The slash command routes to the hidden `debate` agent.
-3. `src/debate.ts`, loaded through `.opencode/plugin/debate.ts`, parses any leading `--rounds <number>` and `--set:default|cheap` flags and validates unsupported leading options.
-4. The plugin replaces the command prompt with a canonical parsed request containing the topic, maximum round count, participant set, and resolved ordered participants.
-5. The Debate agent coordinates subagents only; it does not re-parse slash-command flags.
-6. In round 1, it starts three neutral participant subagents and gives each the same topic.
-7. In later rounds, it calls each participant again with its `task_id` and gives each a fully self-contained prompt (the original topic, the participant's own previous turn, and the other participants' previous turns), so continuity does not depend on the runtime resuming prior context.
-8. From round 2 onward, each participant reports whether consensus has been reached and whether it recommends stopping.
-9. The Debate agent stops early only when all participants report consensus and all recommend stopping.
-10. If the configured round limit is reached and at least one participant reports `recommend_stopping: false`, the Debate agent asks whether to run `1 more round`, `3 more rounds`, or `Stop and synthesise now`.
-11. The Debate agent stores participant turns for continuity, writes a final synthesis in the current session, and persists Markdown and HTML transcripts under `docs/debates/`.
+1. `/debate <topic>` routes to a hidden Debate agent via the slash command.
+2. `src/debate.ts` (loaded through `.opencode/plugin/debate.ts`) parses `--rounds` and `--set` flags, then replaces the command prompt with a canonical request containing the topic, round count, participant set, and resolved participant order.
+3. The Debate agent spawns three participant subagents in round 1, each receiving the same topic.
+4. In subsequent rounds, each participant receives the other participants' most recent turns and refines its position. Round 2+ prompts are fully self-contained — continuity does not depend on resumed context.
+5. From round 2 onward, each participant reports `consensus_reached` and `recommend_stopping`. The debate stops early only when all participants report both as `true`.
+6. If the round limit is reached without consensus, the user is offered additional rounds or a final synthesis.
+7. The Debate agent writes a final synthesis and persists Markdown and HTML transcripts under `docs/debates/`.
 
-No separate OpenCode sessions are used for debate turns.
+Participant turns stay in subagent sessions and transcripts — the main session receives only the final synthesis.
 
-The Debate agent cannot edit files except debate transcripts under `docs/debates/`; all other edits (edit/write/apply_patch) are denied. Shell commands require approval (`bash: ask`), and the coordinator may only spawn the three debate participant subagents (`task` is denied for other subagent types). Its prompt forbids mutating the repository unless the user explicitly asks.
-
-## Participant Agents
-
-The `/debate` command supports two participant sets selected with `--set`:
-
-- `default` set (used when `--set` is omitted):
-  - `Participant 1`: `debate-glm` (GLM-5.2 from OpenCode Go).
-  - `Participant 2`: `debate-opus` (Claude Opus 4.8 through OpenRouter).
-  - `Participant 3`: `debate-openai` (OpenAI GPT-5.5).
-- `cheap` set (`--set:cheap`):
-  - `Participant 1`: `debate-glm` (GLM-5.2 from OpenCode Go).
-  - `Participant 2`: `debate-qwen` (Qwen 3.7 Max from OpenCode Go).
-  - `Participant 3`: `debate-deepseek` (Deepseek V4 Pro from OpenCode Go).
-
-The canonical participant metadata and set ordering live in `src/participants.ts`. The concrete `.opencode/agents/debate-*.md` files are generated from that registry plus `scripts/debate-participant-body.md` so OpenCode can load self-contained agent definitions without requiring five manual prompt edits.
-
-After changing participant metadata or the shared body, regenerate the checked-in agent files:
+## Installation
 
 ```sh
-node scripts/gen-participants.ts
+npm install
 ```
 
-Participants may gather context with read-only tools for higher-quality answers, but do not edit files, run mutating commands, or spawn subagents. Participant `bash` is restricted to a read-only allowlist (file inspection commands such as `cat`, `grep`, `ls`, `git status`, `git diff`); all other shell commands are denied. Each round, participants return a JSON object (`turn`, plus `consensus_reached` and `recommend_stopping` from round 2). Participants treat `recommend_stopping: false` on the final configured round as a signal that the user may be offered additional rounds, not as an error or automatic stop.
+Restart OpenCode after installing so the plugin is loaded.
 
 ## Usage
 
@@ -72,52 +31,96 @@ Participants may gather context with read-only tools for higher-quality answers,
 /debate --rounds 5 --set:cheap compare two architecture options for this project
 ```
 
-Supported leading flags:
+Flags (recognised only before the topic begins):
 
-- `--rounds <number>`: maximum debate rounds. Defaults to `3` and must be an integer between 1 and 10. `--rounds=N` is also accepted. `--rounds` may only be specified once.
-- `--set:default|cheap`: participant set. `default` uses `debate-glm`, `debate-opus`, and `debate-openai`; `cheap` uses `debate-glm`, `debate-qwen`, and `debate-deepseek`. Defaults to `default`. `--set` may only be specified once.
-- `--` ends option parsing; all following text is treated as the topic (useful for topics that begin with `--`).
-- Options are recognised only before the topic begins. After the first non-option token, all remaining text is part of the topic.
+- `--rounds <number>` — maximum rounds (1–10, default 3). `--rounds=N` also accepted. May only appear once.
+- `--set:default|cheap` — participant set (default `default`). May only appear once.
+- `--` — ends option parsing; all following text is the topic.
 
-Invalid command arguments (unsupported options, out-of-range or malformed `--rounds`, duplicate `--rounds`) are normalised into an error prompt for the Debate agent. The agent explains the error and does not start participant subagents.
+Invalid arguments produce an error prompt for the Debate agent; no subagents are started.
 
-Restart OpenCode after changing project plugin files so the plugin is reloaded.
+## Participant Agents
 
-## Output
+Two sets are available via `--set`:
 
-The Debate agent keeps participant turns out of the main session because they are available in the participant subagent sessions and persisted transcripts. The main session receives the final synthesis:
+| Set | Participant 1 | Participant 2 | Participant 3 |
+|---|---|---|---|
+| `default` | `debate-glm` (GLM-5.2) | `debate-opus` (Claude Opus 4.8) | `debate-openai` (GPT-5.6 Sol Pro) |
+| `cheap` | `debate-glm` (GLM-5.2) | `debate-qwen` (Qwen 3.7 Max) | `debate-deepseek` (Deepseek V4 Pro) |
 
-```markdown
-## Final Synthesis
-...
-```
+### Modifying or Adding Subagents
 
-The agent writes both:
+All participant metadata lives in `src/participants.ts`. The `.opencode/agents/debate-*.md` files are generated from this registry plus the shared prompt body in `scripts/debate-participant-body.md`.
 
-- `docs/debates/<UTC-ISO8601-timestamp>-<slug>.md`: Markdown archive for grep and diffs.
-- `docs/debates/<UTC-ISO8601-timestamp>-<slug>.html`: self-contained HTML view using the table format from existing debate files, with rounds as rows, participants as columns, consensus/stop badges, parsing problems, extension notes, and the final summary.
+**To add a new participant:**
+
+1. Add an entry to the `DEBATE_PARTICIPANTS` array in `src/participants.ts`:
+   ```ts
+   {
+     agent: "debate-mistral",
+     description: "Neutral debate participant using Mistral Large",
+     model: "openrouter/mistralai/mistral-large",
+     variant: "max",
+   },
+   ```
+2. Add the agent name to the relevant set(s) in `DEBATE_PARTICIPANT_SETS`:
+   ```ts
+   export const DEBATE_PARTICIPANT_SETS = {
+     default: ["debate-glm", "debate-opus", "debate-openai"],
+     cheap: ["debate-glm", "debate-qwen", "debate-deepseek"],
+     premium: ["debate-opus", "debate-openai", "debate-mistral"],
+   } as const
+   ```
+3. Whitelist the new agent in `.opencode/agents/debate.md` under the `task` permission:
+   ```yaml
+   task:
+     "*": "deny"
+     "debate-openai": "allow"
+     "debate-opus": "allow"
+     "debate-glm": "allow"
+     "debate-deepseek": "allow"
+     "debate-qwen": "allow"
+     "debate-mistral": "allow"
+   ```
+4. Regenerate the agent files:
+   ```sh
+   node scripts/gen-participants.ts
+   ```
+5. Restart OpenCode to load the new agent.
+
+**To modify an existing participant** (e.g. change the model or description):
+
+1. Edit the relevant entry in `DEBATE_PARTICIPANTS` in `src/participants.ts`.
+2. Run `node scripts/gen-participants.ts` to regenerate agent files.
+3. Restart OpenCode.
+
+**To change the shared participant prompt**, edit `scripts/debate-participant-body.md` and regenerate.
+
+**To change a participant's set membership** (e.g. swap one model for another in the `cheap` set), edit `DEBATE_PARTICIPANT_SETS` in `src/participants.ts`. No regeneration is needed for set changes alone.
+
+### Participant Behaviour
+
+Participants may use read-only tools (read, grep, glob, webfetch, etc.) for context but cannot edit files, run mutating commands, or spawn subagents. Each round, participants return a JSON object with a `turn` field (and `consensus_reached`/`recommend_stopping` booleans from round 2 onward).
 
 ## Verification
 
-Run the repository checks before committing changes:
-
 ```sh
-npm install
 sh scripts/verify.sh
 ```
 
-`scripts/verify.sh` runs three layers of checks:
+Runs static contract checks, behavioural unit tests (`node --test tests/*.test.ts`), and TypeScript typechecking (`tsc --noEmit`). Requires Node.js >= 24.
 
-1. Static contract checks: required files exist, local-only artefacts (`.opencode/package*.json`, `node_modules`) are not tracked, command routing and agent frontmatter are well-formed, and generated participant agents are up to date with the registry/template.
-2. Behavioural unit tests: `node --test tests/*.test.ts` exercises the argument parser, prompt generation, part replacement, and participant generation.
-3. TypeScript typecheck: `tsc --noEmit` typechecks `.opencode/plugin/debate.ts` against the installed `@opencode-ai/plugin` and `@opencode-ai/sdk` types.
+## Files
 
-Node.js >= 24 is required (native TypeScript support for running `.ts` tests directly).
-
-## Limitations
-
-- Participant roles are fixed as three neutral peers.
-- Debate state lasts only for the current command execution, but a transcript is persisted under `docs/debates/` for review.
-- `task_id` is treated as a hint that may resume a prior participant context; round 2+ prompts are fully self-contained so the debate is correct whether or not the runtime resumes prior context.
-- Consensus and stop detection parse each round 2+ participant turn as JSON (`consensus_reached` and `recommend_stopping` boolean fields). The coordinator extracts the JSON object between the first `{` and last `}` and retries once on malformed output; if it still fails, the statuses are treated as `false`.
-- If a participant task fails, times out, or returns empty output twice, the Debate agent stops and reports the partial result.
+| File | Purpose |
+|---|---|
+| `.opencode/commands/debate.md` | Routes `/debate` to the Debate agent |
+| `.opencode/plugin/debate.ts` | Plugin entrypoint |
+| `.opencode/agents/debate.md` | Coordinator agent definition |
+| `.opencode/agents/debate-*.md` | Generated participant agent definitions |
+| `src/debate.ts` | Argument parser and prompt generation |
+| `src/participants.ts` | Canonical participant registry and set ordering |
+| `scripts/debate-participant-body.md` | Shared participant prompt body |
+| `scripts/gen-participants.ts` | Renders agent files from registry + body |
+| `scripts/verify.sh` | Contract checks, tests, and typecheck |
+| `tests/debate.test.ts` | Behavioural unit tests |
