@@ -1,7 +1,7 @@
 ---
-description: Neutral debate participant using Deepseek V4 Pro from OpenCode Go
+description: Neutral debate participant using Kimi K3 from OpenCode Go
 mode: subagent
-model: opencode-go/deepseek-v4-pro
+model: opencode-go/kimi-k3
 variant: max
 permission:
   edit: deny

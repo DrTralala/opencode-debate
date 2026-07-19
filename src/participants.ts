@@ -1,6 +1,6 @@
 export const DEBATE_PARTICIPANT_SETS = {
-  default: ["debate-glm", "debate-opus", "debate-openai"],
-  cheap: ["debate-glm", "debate-qwen", "debate-deepseek"],
+  default: ["debate-kimi", "debate-opus", "debate-openai"],
+  cheap: ["debate-glm", "debate-qwen", "debate-kimi"],
 } as const
 
 export type DebateSet = keyof typeof DEBATE_PARTICIPANT_SETS
@@ -27,16 +27,16 @@ export const DEBATE_PARTICIPANTS: readonly DebateParticipant[] = [
     variant: "max",
   },
   {
+    agent: "debate-kimi",
+    description: "Neutral debate participant using Kimi K3 from OpenCode Go",
+    model: "opencode-go/kimi-k3",
+    variant: "max",
+  },
+  {
     agent: "debate-opus",
     description: "Neutral debate participant using Claude Opus 4.8 through OpenRouter",
     model: "openrouter/anthropic/claude-opus-4.8",
     variant: "high",
-  },
-  {
-    agent: "debate-deepseek",
-    description: "Neutral debate participant using Deepseek V4 Pro from OpenCode Go",
-    model: "opencode-go/deepseek-v4-pro",
-    variant: "max",
   },
   {
     agent: "debate-qwen",

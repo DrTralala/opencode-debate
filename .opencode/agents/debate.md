@@ -15,7 +15,7 @@ permission:
     "debate-openai": "allow"
     "debate-opus": "allow"
     "debate-glm": "allow"
-    "debate-deepseek": "allow"
+    "debate-kimi": "allow"
     "debate-qwen": "allow"
 ---
 

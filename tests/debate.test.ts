@@ -170,13 +170,13 @@ test("validPrompt emits the cheap participant set", () => {
   assert.match(p, /Participant set: cheap/)
   assert.match(p, /Participant 1: debate-glm/)
   assert.match(p, /Participant 2: debate-qwen/)
-  assert.match(p, /Participant 3: debate-deepseek/)
+  assert.match(p, /Participant 3: debate-kimi/)
 })
 
 test("validPrompt emits the default participant set by default", () => {
   const p = validPrompt("my topic", 5, "default", "abc123")
   assert.match(p, /Participant set: default/)
-  assert.match(p, /Participant 1: debate-glm/)
+  assert.match(p, /Participant 1: debate-kimi/)
   assert.match(p, /Participant 2: debate-opus/)
   assert.match(p, /Participant 3: debate-openai/)
 })
