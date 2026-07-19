@@ -8,7 +8,7 @@ import { checkParticipantAgents, renderParticipantAgent } from "../scripts/gen-p
 
 test("participant registry defines the supported sets", () => {
   assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "cheap"])
-  assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-opus", "debate-openai"])
+  assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-kimi"])
 })
 

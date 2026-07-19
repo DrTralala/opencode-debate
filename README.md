@@ -45,7 +45,7 @@ Two sets are available via `--set`:
 
 | Set | Participant 1 | Participant 2 | Participant 3 |
 |---|---|---|---|
-| `default` | `debate-kimi` (Kimi K3) | `debate-opus` (Claude Opus 4.8) | `debate-openai` (GPT-5.6 Sol Pro) |
+| `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Fable 5) | `debate-openai` (GPT-5.6 Sol Pro) |
 | `cheap` | `debate-glm` (GLM-5.2) | `debate-qwen` (Qwen 3.7 Max) | `debate-kimi` (Kimi K3) |
 
 ### Modifying or Adding Subagents
@@ -66,9 +66,9 @@ All participant metadata lives in `src/participants.ts`. The `.opencode/agents/d
 2. Add the agent name to the relevant set(s) in `DEBATE_PARTICIPANT_SETS`:
    ```ts
    export const DEBATE_PARTICIPANT_SETS = {
-      default: ["debate-kimi", "debate-opus", "debate-openai"],
+      default: ["debate-kimi", "debate-anthropic", "debate-openai"],
       cheap: ["debate-glm", "debate-qwen", "debate-kimi"],
-     premium: ["debate-opus", "debate-openai", "debate-mistral"],
+     premium: ["debate-anthropic", "debate-openai", "debate-mistral"],
    } as const
    ```
 3. Whitelist the new agent in `.opencode/agents/debate.md` under the `task` permission:
@@ -76,7 +76,7 @@ All participant metadata lives in `src/participants.ts`. The `.opencode/agents/d
    task:
      "*": "deny"
      "debate-openai": "allow"
-     "debate-opus": "allow"
+     "debate-anthropic": "allow"
       "debate-glm": "allow"
       "debate-kimi": "allow"
       "debate-qwen": "allow"

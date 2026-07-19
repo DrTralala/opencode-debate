@@ -1,5 +1,5 @@
 export const DEBATE_PARTICIPANT_SETS = {
-  default: ["debate-kimi", "debate-opus", "debate-openai"],
+  default: ["debate-kimi", "debate-anthropic", "debate-openai"],
   cheap: ["debate-glm", "debate-qwen", "debate-kimi"],
 } as const
 
@@ -33,9 +33,9 @@ export const DEBATE_PARTICIPANTS: readonly DebateParticipant[] = [
     variant: "max",
   },
   {
-    agent: "debate-opus",
-    description: "Neutral debate participant using Claude Opus 4.8 through OpenRouter",
-    model: "openrouter/anthropic/claude-opus-4.8",
+    agent: "debate-anthropic",
+    description: "Neutral debate participant using Claude Fable 5 through OpenRouter",
+    model: "openrouter/anthropic/claude-fable-5",
     variant: "high",
   },
   {

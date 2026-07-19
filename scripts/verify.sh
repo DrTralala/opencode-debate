@@ -37,7 +37,7 @@ assert_tracked ".opencode/agents/debate.md"
 assert_tracked ".opencode/agents/debate-openai.md"
 assert_tracked ".opencode/agents/debate-glm.md"
 assert_tracked ".opencode/agents/debate-kimi.md"
-assert_tracked ".opencode/agents/debate-opus.md"
+assert_tracked ".opencode/agents/debate-anthropic.md"
 assert_tracked ".opencode/agents/debate-qwen.md"
 assert_tracked ".github/workflows/verify.yml"
 assert_tracked ".gitignore"
@@ -94,7 +94,7 @@ assert_not_contains ".opencode/agents/debate.md" "bash: allow"
 
 # Participant agents: mode, model+variant present (canonical source), hardened
 # permissions, read-only body. Model IDs are intentionally not hard-coded here.
-for agent in debate-openai debate-glm debate-kimi debate-opus debate-qwen; do
+for agent in debate-openai debate-glm debate-kimi debate-anthropic debate-qwen; do
   assert_contains ".opencode/agents/$agent.md" "mode: subagent"
   assert_contains ".opencode/agents/$agent.md" "model:"
   assert_contains ".opencode/agents/$agent.md" "variant:"

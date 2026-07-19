@@ -152,21 +152,22 @@ Transcript persistence:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Debate: &lt;escaped slug title&gt;</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1400px; margin: 0 auto; padding: 20px; background: #f8f9fa; color: #212529; line-height: 1.5; }
-  h1 { font-size: 1.5rem; border-bottom: 2px solid #dee2e6; padding-bottom: 8px; }
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1400px; margin: 0 auto; padding: 20px; background: #1b1e21; color: #dee2e6; line-height: 1.5; }
+  h1 { font-size: 1.5rem; border-bottom: 2px solid #495057; padding-bottom: 8px; }
   h2 { font-size: 1.25rem; margin-top: 1.5rem; }
-  .metadata { background: #e9ecef; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }
+  .metadata { background: #2b3035; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }
   .metadata dt { font-weight: 600; float: left; width: 160px; clear: left; }
   .metadata dd { margin-left: 170px; }
-  .topic-box { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; white-space: pre-wrap; }
+  .topic-box { background: #332701; border: 1px solid #997404; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; white-space: pre-wrap; }
   table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-  th, td { border: 1px solid #dee2e6; padding: 10px 12px; vertical-align: top; }
+  th, td { border: 1px solid #495057; padding: 10px 12px; vertical-align: top; }
   th { background: #343a40; color: #fff; font-weight: 600; text-align: center; font-size: 0.85rem; }
-  td { background: #fff; font-size: 0.85rem; }
+  td { background: #212529; font-size: 0.85rem; }
   .turn-text { white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
   .badge-ok { display: inline-block; background: #28a745; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 0.75rem; font-weight: 600; }
   .badge-no { display: inline-block; background: #dc3545; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 0.75rem; font-weight: 600; }
-  .summary-section { background: #fff; border: 1px solid #dee2e6; border-radius: 6px; padding: 16px; margin: 16px 0; }
+  .summary-section { background: #212529; border: 1px solid #495057; border-radius: 6px; padding: 16px; margin: 16px 0; }
 </style>
 </head>
 <body>
@@ -248,7 +249,7 @@ const server: Plugin = async (input, options) => {
           task: {
             "*": "deny",
             "debate-openai": "allow",
-            "debate-opus": "allow",
+            "debate-anthropic": "allow",
             "debate-glm": "allow",
             "debate-kimi": "allow",
             "debate-qwen": "allow",

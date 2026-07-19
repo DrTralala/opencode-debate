@@ -177,7 +177,7 @@ test("validPrompt emits the default participant set by default", () => {
   const p = validPrompt("my topic", 5, "default", "abc123")
   assert.match(p, /Participant set: default/)
   assert.match(p, /Participant 1: debate-kimi/)
-  assert.match(p, /Participant 2: debate-opus/)
+  assert.match(p, /Participant 2: debate-anthropic/)
   assert.match(p, /Participant 3: debate-openai/)
 })
 
