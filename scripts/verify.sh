@@ -55,10 +55,12 @@ assert_not_tracked ".opencode/package.json"
 assert_not_tracked ".opencode/package-lock.json"
 assert_not_tracked ".opencode/node_modules"
 assert_not_tracked "node_modules"
+assert_not_tracked "docs"
 
 # .gitignore covers local node artefacts.
 assert_contains ".gitignore" "node_modules/"
 assert_contains ".gitignore" ".opencode/package.json"
+assert_contains ".gitignore" "docs/"
 
 # Command routes to the debate agent; plugin hooks the command lifecycle.
 assert_contains ".opencode/commands/debate.md" "agent: debate"
