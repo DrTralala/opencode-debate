@@ -191,6 +191,24 @@ test("debate agent consumes resolved participants without owning set order", () 
   assert.doesNotMatch(prompt, /`cheap` → `debate-/)
 })
 
+test("coordinator prompts prefer file tools and use a full-width non-scrolling transcript table", () => {
+  const prompts = [
+    readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8"),
+    readFileSync(new URL("../index.ts", import.meta.url), "utf8"),
+  ]
+
+  for (const prompt of prompts) {
+    assert.match(prompt, /Prefer the .*write.* or .*edit.* tool/)
+    assert.match(prompt, /create missing parent directories/)
+    assert.match(prompt, /table-layout: fixed/)
+    assert.match(prompt, /th:first-child, td:first-child \{ width: 3rem; \}/)
+    assert.match(prompt, /\.turn-text \{ white-space: pre-wrap; overflow-wrap: anywhere; \}/)
+    assert.match(prompt, /body \{[^}]*margin: 0;[^}]*padding: 16px;/)
+    assert.doesNotMatch(prompt, /max-width: 1400px/)
+    assert.doesNotMatch(prompt, /max-height: 400px; overflow-y: auto/)
+  }
+})
+
 test("-- separator treats the rest as the topic", () => {
   const r = parseDebateArguments("-- --rounds 5 not an option")
   assert.equal(r.ok, true)

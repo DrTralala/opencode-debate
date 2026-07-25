@@ -155,6 +155,7 @@ Final synthesis:
 Transcript persistence:
 
 - After producing the final synthesis, create `docs/debates/` if it does not already exist. Get the timestamp by running exactly `date -u +%Y-%m-%dT%H-%M-%SZ`, then write a transcript to `docs/debates/<timestamp>-<slug>.md` where `<slug>` is a short kebab-case slug derived from the topic. Your `edit` permission allows writing only under `docs/debates/`.
+- Prefer the `write` or `edit` tool to create each transcript file directly. These tools create missing parent directories, so a separate `mkdir` command is unnecessary. Bash remains available as a fallback but may require user approval.
 - The transcript must contain: the topic, the configured maximum rounds, each participant's turn per round, any recorded JSON parsing problems, and the final synthesis.
 - Also write a self-contained HTML transcript to `docs/debates/<timestamp>-<slug>.html` using the same table-style format as existing files in `docs/debates/`.
 - The HTML transcript must include inline CSS, a metadata block, a highlighted topic box, a table where each row is a round and each participant has one column, `consensus_reached` and `recommend_stopping` badges for round 2 and later, any extension decisions, any JSON parsing problems, and a final summary section.
@@ -170,18 +171,19 @@ Transcript persistence:
 <title>Debate: &lt;escaped slug title&gt;</title>
 <style>
   :root { color-scheme: dark; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1400px; margin: 0 auto; padding: 20px; background: #1b1e21; color: #dee2e6; line-height: 1.5; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 16px; background: #1b1e21; color: #dee2e6; line-height: 1.5; }
   h1 { font-size: 1.5rem; border-bottom: 2px solid #495057; padding-bottom: 8px; }
   h2 { font-size: 1.25rem; margin-top: 1.5rem; }
   .metadata { background: #2b3035; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }
   .metadata dt { font-weight: 600; float: left; width: 160px; clear: left; }
   .metadata dd { margin-left: 170px; }
   .topic-box { background: #332701; border: 1px solid #997404; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; white-space: pre-wrap; }
-  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 16px 0; }
+  th:first-child, td:first-child { width: 3rem; }
   th, td { border: 1px solid #495057; padding: 10px 12px; vertical-align: top; }
   th { background: #343a40; color: #fff; font-weight: 600; text-align: center; font-size: 0.85rem; }
   td { background: #212529; font-size: 0.85rem; }
-  .turn-text { white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+  .turn-text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .badge-ok { display: inline-block; background: #28a745; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 0.75rem; font-weight: 600; }
   .badge-no { display: inline-block; background: #dc3545; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 0.75rem; font-weight: 600; }
   .summary-section { background: #212529; border: 1px solid #495057; border-radius: 6px; padding: 16px; margin: 16px 0; }
