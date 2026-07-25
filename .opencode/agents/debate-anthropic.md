@@ -1,7 +1,7 @@
 ---
-description: Neutral debate participant using Claude Fable 5 through OpenRouter
+description: Neutral debate participant using Claude Opus 5 through OpenRouter
 mode: subagent
-model: openrouter/anthropic/claude-fable-5
+model: openrouter/anthropic/claude-opus-5
 variant: high
 permission:
   edit: deny

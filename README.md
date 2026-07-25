@@ -45,7 +45,7 @@ Two sets are available via `--set`:
 
 | Set | Participant 1 | Participant 2 | Participant 3 |
 |---|---|---|---|
-| `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Fable 5) | `debate-openai` (GPT-5.6 Sol Pro) |
+| `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Opus 5) | `debate-openai` (GPT-5.6 Sol Pro) |
 | `cheap` | `debate-glm` (GLM-5.2) | `debate-qwen` (Qwen 3.7 Max) | `debate-kimi` (Kimi K3) |
 
 ### Modifying or Adding Subagents

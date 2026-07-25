@@ -34,8 +34,8 @@ export const DEBATE_PARTICIPANTS: readonly DebateParticipant[] = [
   },
   {
     agent: "debate-anthropic",
-    description: "Neutral debate participant using Claude Fable 5 through OpenRouter",
-    model: "openrouter/anthropic/claude-fable-5",
+    description: "Neutral debate participant using Claude Opus 5 through OpenRouter",
+    model: "openrouter/anthropic/claude-opus-5",
     variant: "high",
   },
   {

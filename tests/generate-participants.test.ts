@@ -19,6 +19,17 @@ test("participant registry contains metadata for every referenced agent", () => 
   }
 })
 
+test("anthropic participant uses Claude Opus 5 through OpenRouter", () => {
+  const participant = DEBATE_PARTICIPANTS.find((entry) => entry.agent === "debate-anthropic")
+
+  assert.deepEqual(participant, {
+    agent: "debate-anthropic",
+    description: "Neutral debate participant using Claude Opus 5 through OpenRouter",
+    model: "openrouter/anthropic/claude-opus-5",
+    variant: "high",
+  })
+})
+
 test("renderParticipantAgent combines participant metadata with the shared body", () => {
   const participant = DEBATE_PARTICIPANTS.find((entry) => entry.agent === "debate-openai")
   assert.ok(participant)
