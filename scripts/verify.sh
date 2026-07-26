@@ -83,6 +83,17 @@ assert_line ".gitignore" ".env.*"
 assert_line ".gitignore" "!.env.example"
 assert_line ".gitignore" "__pycache__/"
 
+# README badges describe only services and requirements this repository uses.
+assert_contains "README.md" 'alt="CI"'
+assert_contains "README.md" 'actions/workflows/verify.yml/badge.svg'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v0.1.3'
+assert_contains "README.md" 'img.shields.io/badge/version-v0.1.3-blue.svg?style=flat-square'
+assert_contains "README.md" 'href="./LICENSE"'
+assert_contains "README.md" 'img.shields.io/badge/License-MIT-blue.svg?style=flat-square'
+assert_contains "README.md" 'href="https://nodejs.org/"'
+assert_contains "README.md" 'img.shields.io/badge/Node-%3E%3D24-339933.svg?style=flat-square'
+assert_not_contains "README.md" 'img.shields.io/npm'
+
 # Command routes to the debate agent; plugin hooks the command lifecycle.
 assert_contains ".opencode/commands/debate.md" "agent: debate"
 assert_contains ".opencode/plugin/debate.ts" "../../src/debate.ts"
