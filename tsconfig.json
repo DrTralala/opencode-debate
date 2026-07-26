@@ -8,7 +8,13 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": []
+    "types": ["node"]
   },
-  "include": ["src/debate.ts", ".opencode/plugin/debate.ts", "index.ts"]
+  "include": [
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    ".opencode/plugin/**/*.ts",
+    "index.ts"
+  ]
 }

@@ -3,12 +3,15 @@ description: Coordinates visible debates using participant subagents with self-c
 mode: primary
 hidden: true
 permission:
+  "*": "deny"
+  external_directory: deny
   edit:
     "*": "deny"
     "docs/debates/**": "allow"
   bash:
-    "*": "ask"
+    "*": "deny"
     "date -u +%Y-%m-%dT%H-%M-%SZ": "allow"
+    "python3 scripts/generate_html.py --latest": "allow"
   question: allow
   task:
     "*": "deny"
@@ -154,57 +157,88 @@ Final synthesis:
 
 Transcript persistence:
 
-- After producing the final synthesis, create `docs/debates/` if it does not already exist. Get the timestamp by running exactly `date -u +%Y-%m-%dT%H-%M-%SZ`, then write a transcript to `docs/debates/<timestamp>-<slug>.md` where `<slug>` is a short kebab-case slug derived from the topic. Your `edit` permission allows writing only under `docs/debates/`.
-- Prefer the `write` or `edit` tool to create each transcript file directly. These tools create missing parent directories, so a separate `mkdir` command is unnecessary. Bash remains available as a fallback but may require user approval.
-- The transcript must contain: the topic, the configured maximum rounds, each participant's turn per round, any recorded JSON parsing problems, and the final synthesis.
-- Also write a self-contained HTML transcript to `docs/debates/<timestamp>-<slug>.html` using the same table-style format as existing files in `docs/debates/`.
-- The HTML transcript must include inline CSS, a metadata block, a highlighted topic box, a table where each row is a round and each participant has one column, `consensus_reached` and `recommend_stopping` badges for round 2 and later, any extension decisions, any JSON parsing problems, and a final summary section.
-- Before inserting any dynamic content into HTML, escape `&` as `&amp;`, `<` as `&lt;`, `>` as `&gt;`, `"` as `&quot;`, and `'` as `&#39;`. Dynamic content includes topic text, participant turns, parsing problems, extension notes, and final synthesis text.
-- Use this HTML structure as the baseline and fill in escaped content:
+- After producing the final synthesis, get the timestamp by running exactly `date -u +%Y-%m-%dT%H-%M-%SZ`, then write the canonical Markdown transcript to `docs/debates/<timestamp>-<slug>.md`, where `<slug>` is a short kebab-case slug derived from the topic.
+- Use the `write` or `edit` tool to create the Markdown file directly. These tools create missing parent directories, so do not run a separate directory-creation command.
+- Write only canonical Markdown. Do not author, edit, or repair HTML directly.
+- Use exactly this transcript structure. Repeat the participant blocks for every round, omit status bullets in round 1, and begin every participant block in round 2 and later with both lowercase boolean status bullets:
 
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Debate: &lt;escaped slug title&gt;</title>
-<style>
-  :root { color-scheme: dark; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 16px; background: #1b1e21; color: #dee2e6; line-height: 1.5; }
-  h1 { font-size: 1.5rem; border-bottom: 2px solid #495057; padding-bottom: 8px; }
-  h2 { font-size: 1.25rem; margin-top: 1.5rem; }
-  .metadata { background: #2b3035; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }
-  .metadata dt { font-weight: 600; float: left; width: 160px; clear: left; }
-  .metadata dd { margin-left: 170px; }
-  .topic-box { background: #332701; border: 1px solid #997404; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; white-space: pre-wrap; }
-  table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 16px 0; }
-  th:first-child, td:first-child { width: 3rem; }
-  th, td { border: 1px solid #495057; padding: 10px 12px; vertical-align: top; }
-  th { background: #343a40; color: #fff; font-weight: 600; text-align: center; font-size: 0.85rem; }
-  td { background: #212529; font-size: 0.85rem; }
-  .turn-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .badge-ok { display: inline-block; background: #28a745; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 0.75rem; font-weight: 600; }
-  .badge-no { display: inline-block; background: #dc3545; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 0.75rem; font-weight: 600; }
-  .summary-section { background: #212529; border: 1px solid #495057; border-radius: 6px; padding: 16px; margin: 16px 0; }
-</style>
-</head>
-<body>
-<h1>Debate: &lt;escaped title&gt;</h1>
-<div class="metadata"><dl>...escaped metadata...</dl></div>
-<div class="topic-box"><strong>Topic:</strong> &lt;escaped topic&gt;</div>
-<h2>Debate Rounds</h2>
-<table><thead><tr><th>Rd</th><th>Participant 1</th><th>Participant 2</th><th>Participant 3</th></tr></thead><tbody>...escaped rounds...</tbody></table>
-<div class="summary-section"><h2>Summary</h2>...escaped synthesis...</div>
-</body>
-</html>
+```markdown
+# Debate: <title>
+
+**Date:** <timestamp>
+**Topic:** <topic copied verbatim>
+**Maximum rounds:** <configured maximum rounds>
+**Rounds completed:** <actual rounds completed>
+**Participants:** Participant 1 (<resolved agent>), Participant 2 (<resolved agent>), Participant 3 (<resolved agent>)
+**Consensus reached:** <Yes, No, or a transparent split result>
+
+---
+
+## Round 1
+
+### Participant 1 (<resolved agent>)
+
+<turn copied verbatim>
+
+### Participant 2 (<resolved agent>)
+
+<turn copied verbatim>
+
+### Participant 3 (<resolved agent>)
+
+<turn copied verbatim>
+
+---
+
+## Round 2
+
+### Participant 1 (<resolved agent>)
+
+- **consensus_reached:** <true|false>
+- **recommend_stopping:** <true|false>
+
+<turn copied verbatim>
+
+### Participant 2 (<resolved agent>)
+
+- **consensus_reached:** <true|false>
+- **recommend_stopping:** <true|false>
+
+<turn copied verbatim>
+
+### Participant 3 (<resolved agent>)
+
+- **consensus_reached:** <true|false>
+- **recommend_stopping:** <true|false>
+
+<turn copied verbatim>
+
+---
+
+## Extension Decisions
+
+<extension decisions; omit this section when none occurred>
+
+---
+
+## JSON Parsing Problems
+
+<recorded parsing problems; omit this section when none occurred>
+
+---
+
+## Final Synthesis
+
+<final synthesis>
 ```
-- If writing the transcript fails, note the failure in the main session and continue; do not block the synthesis on the transcript.
+- `## Final Synthesis` must be the final level-two section. Optional `## Extension Decisions` and `## JSON Parsing Problems` sections, when present, must appear after all rounds and before it.
+- After the Markdown write succeeds, run exactly `python3 scripts/generate_html.py --latest`. This generates the sibling HTML file from the newest timestamped Markdown transcript using the repository's validated style.
+- If the Markdown write fails, report the failure and do not run the generator. If the generator fails, keep the Markdown transcript and report its path plus the concise generator error; do not attempt to write HTML yourself.
 
 Visibility requirement:
 
 - Do not print participant turns in the current session; they are available in the participant subagent sessions and in the persisted transcript.
-- Print the Markdown and HTML transcript paths in the current session after they are written.
+- After successful generation, print both the Markdown and HTML transcript paths in the current session.
 - Keep the main session focused on coordination and final synthesis.
 - Do not hide orchestration behind metadata, toasts, or a separate OpenCode session.
 - Do not create a nested coordinator subagent. You are the coordinator.

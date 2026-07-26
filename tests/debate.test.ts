@@ -1,7 +1,24 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
+import type { Part } from "@opencode-ai/sdk"
 import { parseDebateArguments, trimSurroundingQuotes, validPrompt, errorPrompt, replaceParts } from "../src/debate.ts"
+import { DEBATE_PARTICIPANTS } from "../src/participants.ts"
+import {
+  COORDINATOR_PROMPT,
+  PARTICIPANT_PERMISSION,
+  PARTICIPANT_PROMPT,
+  buildCoordinatorPrompt,
+  coordinatorPermission,
+  htmlGeneratorCommand,
+  participantTaskPermission,
+} from "../index.ts"
+
+function markdownBody(source: string): string {
+  const match = /^---\n[\s\S]*?\n---\n\n([\s\S]*)$/.exec(source)
+  assert.ok(match, "expected YAML frontmatter")
+  return match[1].trimEnd()
+}
 
 test("default rounds when --rounds absent", () => {
   const r = parseDebateArguments("compare two options")
@@ -191,21 +208,64 @@ test("debate agent consumes resolved participants without owning set order", () 
   assert.doesNotMatch(prompt, /`cheap` → `debate-/)
 })
 
-test("coordinator prompts prefer file tools and use a full-width non-scrolling transcript table", () => {
-  const prompts = [
-    readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8"),
-    readFileSync(new URL("../index.ts", import.meta.url), "utf8"),
-  ]
+test("static and plugin participant prompts are identical", () => {
+  const body = readFileSync(new URL("../scripts/debate-participant-body.md", import.meta.url), "utf8")
+  assert.equal(PARTICIPANT_PROMPT, body.trimEnd())
+})
 
-  for (const prompt of prompts) {
-    assert.match(prompt, /Prefer the .*write.* or .*edit.* tool/)
-    assert.match(prompt, /create missing parent directories/)
-    assert.match(prompt, /table-layout: fixed/)
-    assert.match(prompt, /th:first-child, td:first-child \{ width: 3rem; \}/)
-    assert.match(prompt, /\.turn-text \{ white-space: pre-wrap; overflow-wrap: anywhere; \}/)
-    assert.match(prompt, /body \{[^}]*margin: 0;[^}]*padding: 16px;/)
-    assert.doesNotMatch(prompt, /max-width: 1400px/)
-    assert.doesNotMatch(prompt, /max-height: 400px; overflow-y: auto/)
+test("static and project-local coordinator prompts are identical", () => {
+  const source = readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8")
+  assert.equal(COORDINATOR_PROMPT, markdownBody(source))
+})
+
+test("installed generator command is safely quoted and substituted exactly", () => {
+  const command = htmlGeneratorCommand("file:///tmp/plugin%20dir/index.ts")
+  assert.equal(command, "python3 '/tmp/plugin dir/scripts/generate_html.py' --latest")
+  const prompt = buildCoordinatorPrompt(command)
+  assert.equal(prompt.split(command).length - 1, 1)
+  assert.doesNotMatch(prompt, /__HTML_GENERATOR_COMMAND__/)
+})
+
+test("installed generator command escapes apostrophes for the shell", () => {
+  const command = htmlGeneratorCommand("file:///tmp/plugin%27dir/index.ts")
+  assert.equal(command, "python3 '/tmp/plugin'\"'\"'dir/scripts/generate_html.py' --latest")
+})
+
+test("task permissions are derived from the participant registry", () => {
+  assert.deepEqual(participantTaskPermission(), {
+    "*": "deny",
+    ...Object.fromEntries(DEBATE_PARTICIPANTS.map(({ agent }) => [agent, "allow"])),
+  })
+})
+
+test("participant permissions are deny-by-default without shell or external access", () => {
+  assert.equal(PARTICIPANT_PERMISSION["*"], "deny")
+  assert.equal(PARTICIPANT_PERMISSION.bash, "deny")
+  assert.equal(PARTICIPANT_PERMISSION.external_directory, "deny")
+  assert.deepEqual(PARTICIPANT_PERMISSION.read, {
+    "*": "allow",
+    "*.env": "deny",
+    "*.env.*": "deny",
+    "*.env.example": "allow",
+  })
+})
+
+test("coordinator permits only date and the exact generator command in Bash", () => {
+  const command = "python3 '/tmp/plugin/scripts/generate_html.py' --latest"
+  const permission = coordinatorPermission(command)
+  assert.deepEqual(permission.bash, {
+    "*": "deny",
+    "date -u +%Y-%m-%dT%H-%M-%SZ": "allow",
+    [command]: "allow",
+  })
+  assert.equal(permission["*"], "deny")
+  assert.equal(permission.external_directory, "deny")
+})
+
+test("static coordinator task permissions contain every registry agent", () => {
+  const source = readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8")
+  for (const { agent } of DEBATE_PARTICIPANTS) {
+    assert.match(source, new RegExp(`^    "${agent}": "allow"$`, "m"))
   }
 })
 
@@ -295,7 +355,9 @@ test("errorPrompt surfaces the error and forbids subagents", () => {
 })
 
 test("replaceParts replaces existing text in place", () => {
-  const output = { parts: [{ id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "old" }] }
+  const output: { parts: Part[] } = {
+    parts: [{ id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "old" }],
+  }
   replaceParts(output, "new")
   assert.equal(output.parts.length, 1)
   assert.equal(output.parts[0].type, "text")
@@ -306,7 +368,7 @@ test("replaceParts replaces existing text in place", () => {
 })
 
 test("replaceParts drops non-text parts", () => {
-  const output = {
+  const output: { parts: Part[] } = {
     parts: [
       { id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "old" },
       { id: "p2", sessionID: "s1", messageID: "m1", type: "reasoning", text: "r", time: { start: 0 } },
@@ -319,7 +381,7 @@ test("replaceParts drops non-text parts", () => {
 })
 
 test("replaceParts pushes a synthetic text part when no existing text", () => {
-  const output = { parts: [] as Array<{ type: string; text?: string; [k: string]: unknown }> }
+  const output: { parts: Part[] } = { parts: [] }
   replaceParts(output, "fresh")
   assert.equal(output.parts.length, 1)
   assert.equal(output.parts[0].type, "text")

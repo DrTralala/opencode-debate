@@ -4,4 +4,9 @@ node_modules/
 .opencode/package-lock.json
 .opencode/bun.lock
 .DS_Store
-docs/
+docs/debates/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]

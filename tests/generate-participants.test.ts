@@ -39,9 +39,18 @@ test("renderParticipantAgent combines participant metadata with the shared body"
   assert.match(rendered, /description: Neutral debate participant using OpenAI GPT-5.6 Sol Pro/)
   assert.match(rendered, /model: openai\/gpt-5\.6-sol/)
   assert.match(rendered, /variant: xhigh/)
-  assert.match(rendered, /edit: deny/)
-  assert.match(rendered, /task: deny/)
-  assert.match(rendered, /question: deny/)
+  assert.match(rendered, /permission:\n  "\*": "deny"/)
+  assert.match(rendered, /  read:\n    "\*": "allow"/)
+  assert.match(rendered, /    "\*\.env": "deny"/)
+  assert.match(rendered, /    "\*\.env\.\*": "deny"/)
+  assert.match(rendered, /    "\*\.env\.example": "allow"/)
+  for (const tool of ["grep", "glob", "lsp", "webfetch", "websearch"]) {
+    assert.match(rendered, new RegExp(`  ${tool}: allow`))
+  }
+  for (const tool of ["external_directory", "bash", "edit", "question", "task", "skill"]) {
+    assert.match(rendered, new RegExp(`  ${tool}: deny`))
+  }
+  assert.doesNotMatch(rendered, /"find \*"|"echo \*"|"cat \*"|git (show|diff|log)/)
   assert.match(rendered, /Shared participant instructions\./)
   assert.equal(rendered.endsWith("\n"), true)
 })
