@@ -4,7 +4,7 @@ node_modules/
 .opencode/package-lock.json
 .opencode/bun.lock
 .DS_Store
-docs/debates/
+docs/
 .env
 .env.*
 !.env.example
