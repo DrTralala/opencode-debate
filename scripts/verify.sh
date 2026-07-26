@@ -86,8 +86,8 @@ assert_line ".gitignore" "__pycache__/"
 # README badges describe only services and requirements this repository uses.
 assert_contains "README.md" 'alt="CI"'
 assert_contains "README.md" 'actions/workflows/verify.yml/badge.svg'
-assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v0.1.3'
-assert_contains "README.md" 'img.shields.io/badge/version-v0.1.3-blue.svg?style=flat-square'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v0.1.4'
+assert_contains "README.md" 'img.shields.io/badge/version-v0.1.4-blue.svg?style=flat-square'
 assert_contains "README.md" 'href="./LICENSE"'
 assert_contains "README.md" 'img.shields.io/badge/License-MIT-blue.svg?style=flat-square'
 assert_contains "README.md" 'href="https://nodejs.org/"'
