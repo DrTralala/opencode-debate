@@ -19,6 +19,13 @@ export function assertPackageFiles(paths) {
   assert.deepEqual([...paths].sort(), expected)
 }
 
+export function packageFilesFromReport(report) {
+  const entries = Array.isArray(report) ? report : Object.values(report)
+  assert.equal(entries.length, 1)
+  assert.ok(Array.isArray(entries[0].files))
+  return entries[0].files.map((file) => file.path)
+}
+
 function main() {
   const root = fileURLToPath(new URL("..", import.meta.url))
   const output = execFileSync("npm", ["pack", "--dry-run", "--json"], {
@@ -26,8 +33,7 @@ function main() {
     encoding: "utf8",
   })
   const report = JSON.parse(output)
-  assert.equal(report.length, 1)
-  assertPackageFiles(report[0].files.map((file) => file.path))
+  assertPackageFiles(packageFilesFromReport(report))
   process.stdout.write("package contents: ok\n")
 }
 
