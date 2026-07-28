@@ -55,6 +55,7 @@ assert_tracked ".opencode/agents/debate-kimi.md"
 assert_tracked ".opencode/agents/debate-anthropic.md"
 assert_tracked ".opencode/agents/debate-qwen.md"
 assert_tracked ".github/workflows/verify.yml"
+assert_tracked ".github/workflows/publish.yml"
 assert_tracked ".gitignore"
 assert_tracked "package.json"
 assert_tracked "package-lock.json"
@@ -69,6 +70,7 @@ assert_tracked "scripts/verify.sh"
 assert_tracked "README.md"
 assert_tracked "tests/render_markdown.test.mjs"
 assert_tracked "tests/check_package.test.mjs"
+assert_tracked "tests/publish_workflow.test.mjs"
 
 # npm publication metadata.
 assert_not_contains "package.json" '"private"'
@@ -108,6 +110,15 @@ assert_contains "README.md" 'img.shields.io/badge/License-MIT-blue.svg?style=fla
 assert_contains "README.md" 'href="https://nodejs.org/"'
 assert_contains "README.md" 'img.shields.io/badge/Node-%3E%3D24-339933.svg?style=flat-square'
 assert_not_contains "README.md" 'img.shields.io/npm'
+
+# npm publishing is release-only and uses GitHub OIDC without a persistent token.
+assert_contains ".github/workflows/publish.yml" "release:"
+assert_contains ".github/workflows/publish.yml" "types: [published]"
+assert_contains ".github/workflows/publish.yml" "id-token: write"
+assert_contains ".github/workflows/publish.yml" "contents: read"
+assert_contains ".github/workflows/publish.yml" "npm publish"
+assert_not_contains ".github/workflows/publish.yml" "NPM_TOKEN"
+assert_not_contains ".github/workflows/publish.yml" "NODE_AUTH_TOKEN"
 
 # Command routes to the debate agent; plugin hooks the command lifecycle.
 assert_contains ".opencode/commands/debate.md" "agent: debate"
