@@ -66,6 +66,19 @@ assert_tracked "scripts/generate_html.py"
 assert_tracked "scripts/verify.sh"
 assert_tracked "README.md"
 
+# npm publication metadata.
+assert_not_contains "package.json" '"private"'
+assert_contains "package.json" '"author": "DrTralala <drtralala@outlook.com>"'
+assert_contains "package.json" '"files": ['
+assert_contains "package.json" '"scripts/generate_html.py"'
+assert_contains "package.json" '"publishConfig": {'
+assert_contains "package.json" '"access": "public"'
+assert_contains "README.md" '"opencode-debate@latest"'
+assert_contains "README.md" '"opencode-debate@0.1.5"'
+assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
+assert_not_contains "README.md" 'this package is not published to npm'
+assert_not_contains "README.md" 'tree/v0.1.5'
+
 # Local-only artefacts must not be tracked.
 assert_not_tracked ".opencode/package.json"
 assert_not_tracked ".opencode/package-lock.json"
@@ -86,8 +99,6 @@ assert_line ".gitignore" "__pycache__/"
 # README badges describe only services and requirements this repository uses.
 assert_contains "README.md" 'alt="CI"'
 assert_contains "README.md" 'actions/workflows/verify.yml/badge.svg'
-assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v0.1.5'
-assert_contains "README.md" 'img.shields.io/badge/version-v0.1.5-blue.svg?style=flat-square'
 assert_contains "README.md" 'href="./LICENSE"'
 assert_contains "README.md" 'img.shields.io/badge/License-MIT-blue.svg?style=flat-square'
 assert_contains "README.md" 'href="https://nodejs.org/"'

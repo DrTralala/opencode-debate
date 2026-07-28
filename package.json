@@ -2,9 +2,8 @@
   "name": "opencode-debate",
   "version": "0.1.5",
   "description": "Run structured multi-model debates in OpenCode.",
-  "private": true,
   "license": "MIT",
-  "author": "Trevor Leong <drtralala@outlook.com>",
+  "author": "DrTralala <drtralala@outlook.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DrTralala/opencode-debate.git"
@@ -20,6 +19,14 @@
     "llm",
     "multi-agent"
   ],
+  "files": [
+    "index.ts",
+    "src/",
+    "scripts/generate_html.py"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./index.ts",
   "engines": {

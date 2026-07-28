@@ -2,7 +2,6 @@
 
 <p align="center">
   <a href="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml"><img alt="CI" src="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg" /></a>
-  <a href="https://github.com/DrTralala/opencode-debate/tree/v0.1.5"><img alt="Version: v0.1.5" src="https://img.shields.io/badge/version-v0.1.5-blue.svg?style=flat-square" /></a>
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a>
   <a href="https://nodejs.org/"><img alt="Node.js >=24" src="https://img.shields.io/badge/Node-%3E%3D24-339933.svg?style=flat-square" /></a>
 </p>
@@ -19,26 +18,35 @@ Run structured, multi-round debates in OpenCode with three neutral participant a
 
 ## Install as an OpenCode Plugin
 
-Add this Git dependency to the `plugin` array in your project's `opencode.json`:
+Add the npm package to the singular `plugin` array in your project's `opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "git+https://github.com/DrTralala/opencode-debate.git"
+    "opencode-debate@latest"
   ]
 }
 ```
 
-Restart OpenCode, then run:
+For a reproducible bootstrap installation, pin the exact version instead:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-debate@0.1.5"
+  ]
+}
+```
+
+OpenCode installs and caches the npm package automatically. Do not run `npm install` in the consumer project. Restart OpenCode after changing the plugin specification, then run:
 
 ```text
 /debate compare two architecture options for this project
 ```
 
-The plugin entry point in `index.ts` registers `/debate`, the coordinator, and all participant agents at runtime. Consumer projects do not copy this repository's `.opencode/` files. Distribution is Git-based; this package is not published to npm.
-
-Restart OpenCode after changing the plugin spec. OpenCode package-cache and update behaviour can vary by release, so use the update procedure documented for your installed OpenCode version if it retains an older Git revision.
+The plugin entry point in `index.ts` registers `/debate`, the coordinator, and all participant agents at runtime. Consumer projects do not copy this repository's `.opencode/` files.
 
 ## Development Checkout
 
