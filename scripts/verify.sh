@@ -80,10 +80,16 @@ assert_contains "package.json" '"scripts/generate_html.py"'
 assert_contains "package.json" '"publishConfig": {'
 assert_contains "package.json" '"access": "public"'
 assert_contains "README.md" '"opencode-debate@latest"'
-assert_contains "README.md" '"opencode-debate@0.1.5"'
+assert_contains "README.md" '"opencode-debate@1.0.0"'
 assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
 assert_not_contains "README.md" 'this package is not published to npm'
-assert_not_contains "README.md" 'tree/v0.1.5'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v1.0.0'
+assert_contains "README.md" 'img.shields.io/badge/version-v1.0.0-blue.svg?style=flat-square'
+assert_contains "README.md" 'Python 3.9 or later'
+assert_contains "README.md" 'docs/debates/'
+assert_contains "README.md" 'GPT-5.6 Sol, `xhigh`'
+assert_not_contains "README.md" 'GPT-5.6 Sol Pro'
+assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
 
 # Local-only artefacts must not be tracked.
 assert_not_tracked ".opencode/package.json"
@@ -108,7 +114,7 @@ assert_contains "README.md" 'actions/workflows/verify.yml/badge.svg'
 assert_contains "README.md" 'href="./LICENSE"'
 assert_contains "README.md" 'img.shields.io/badge/License-MIT-blue.svg?style=flat-square'
 assert_contains "README.md" 'href="https://nodejs.org/"'
-assert_contains "README.md" 'img.shields.io/badge/Node-%3E%3D24-339933.svg?style=flat-square'
+assert_contains "README.md" 'img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square'
 assert_not_contains "README.md" 'img.shields.io/npm'
 
 # npm publishing is release-only and uses GitHub OIDC without a persistent token.

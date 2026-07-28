@@ -1,5 +1,5 @@
 ---
-description: Neutral debate participant using OpenAI GPT-5.6 Sol Pro
+description: Neutral debate participant using OpenAI GPT-5.6 Sol (xhigh)
 mode: subagent
 model: openai/gpt-5.6-sol
 variant: xhigh

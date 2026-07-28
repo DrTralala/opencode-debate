@@ -2,23 +2,23 @@
 
 <p align="center">
   <a href="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml"><img alt="CI" src="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg" /></a>
+  <a href="https://github.com/DrTralala/opencode-debate/tree/v1.0.0"><img alt="Version: v1.0.0" src="https://img.shields.io/badge/version-v1.0.0-blue.svg?style=flat-square" /></a>
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a>
-  <a href="https://nodejs.org/"><img alt="Node.js >=24" src="https://img.shields.io/badge/Node-%3E%3D24-339933.svg?style=flat-square" /></a>
+  <a href="https://nodejs.org/"><img alt="Node.js >=24.15.0" src="https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square" /></a>
 </p>
 
 Run structured, multi-round debates in OpenCode with three neutral participant agents backed by different language models, followed by a final synthesis.
 
 ## Requirements
 
-- OpenCode
-- Git
-- Node.js 24 or later
-- Python 3
+- OpenCode 1.17.13 or later
+- Node.js 24.15.0 or later
+- Python 3.9 or later
 - Access to the providers used by your selected participant set
 
 ## Install as an OpenCode Plugin
 
-Add the npm package to the singular `plugin` array in your project's `opencode.json`:
+For project-only installation, add the npm package to `plugin` in the project's `opencode.json`:
 
 ```json
 {
@@ -29,13 +29,15 @@ Add the npm package to the singular `plugin` array in your project's `opencode.j
 }
 ```
 
-For a reproducible bootstrap installation, pin the exact version instead:
+For installation across all projects, add the same `plugin` entry to your global OpenCode configuration at `~/.config/opencode/opencode.json`.
+
+For a reproducible installation, pin the exact release:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@0.1.5"
+    "opencode-debate@1.0.0"
   ]
 }
 ```
@@ -95,7 +97,7 @@ Invalid options produce an error without starting participant subagents.
 
 | Set | Participant 1 | Participant 2 | Participant 3 |
 |---|---|---|---|
-| `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Opus 5) | `debate-openai` (GPT-5.6 Sol Pro) |
+| `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Opus 5) | `debate-openai` (GPT-5.6 Sol, `xhigh`) |
 | `cheap` | `debate-glm` (GLM-5.2) | `debate-qwen` (Qwen 3.7 Max) | `debate-kimi` (Kimi K3) |
 
 Participant metadata, provider model IDs, variants, and set ordering are defined in `src/participants.ts`. To override them, use a checkout or fork, edit that registry, run `node scripts/gen-participants.ts`, and restart OpenCode. Provider availability and supported variants can change independently of this repository.
@@ -103,7 +105,7 @@ Participant metadata, provider model IDs, variants, and set ordering are defined
 ## Privacy and Cost
 
 - Debate topics, participant turns, and workspace context read by participants can be sent to several third-party model providers.
-- Transcripts are stored locally under `docs/debates/` and can contain sensitive source code or repository context. The directory is Git-ignored, but the files still require normal local-data protection.
+- Transcripts are stored locally under `docs/debates/` and can contain sensitive source code or repository context. Plugin consumers do not inherit this repository's ignore rules, so add `docs/debates/` to your own `.gitignore` before running debates.
 - A debate invokes three models per round and may be extended beyond its configured limit. Multi-model, multi-round debates can incur substantial provider usage and cost.
 
 ## Transcripts
@@ -113,7 +115,7 @@ Each completed debate writes:
 - `docs/debates/<timestamp>-<slug>.md`
 - `docs/debates/<timestamp>-<slug>.html`
 
-Markdown is canonical. `scripts/generate_html.py` validates it and atomically generates the self-contained HTML transcript. The transcript directory is local-only and ignored by Git.
+Markdown is canonical. `scripts/generate_html.py` validates it and atomically generates self-contained HTML. Participant turns, extension decisions, JSON parsing notes, and final synthesis render as sanitized Markdown; Consensus and Stop badges appear below each completed round. The transcript files still require normal local-data protection.
 
 ## Verification
 
@@ -127,7 +129,8 @@ This runs repository contract checks, generated-agent and prompt drift detection
 
 | Path | Purpose |
 |---|---|
-| `index.ts` | Git-installed plugin entry point and runtime agent registration |
+| `package.json` | npm package metadata, runtime dependencies, and release scripts |
+| `index.ts` | npm plugin entry point and runtime agent registration |
 | `.opencode/commands/debate.md` | Routes `/debate` to the project-local coordinator |
 | `.opencode/agents/debate.md` | Defines project-local orchestration, stopping, synthesis, and transcripts |
 | `.opencode/agents/debate-*.md` | Generated project-local participant definitions |
@@ -136,9 +139,13 @@ This runs repository contract checks, generated-agent and prompt drift detection
 | `src/participants.ts` | Defines participants and participant sets |
 | `scripts/debate-participant-body.md` | Shared participant instructions |
 | `scripts/gen-participants.ts` | Generates participant agent files |
-| `scripts/generate_html.py` | Parses Markdown and generates consistent transcript HTML |
-| `tests/test_generate_html.py` | Tests transcript parsing, escaping, layout, containment, and atomic writes |
+| `scripts/generate_html.py` | Parses Markdown transcripts and atomically generates HTML |
+| `scripts/render_markdown.mjs` | Renders and sanitizes narrative Markdown for HTML transcripts |
+| `scripts/check_package.mjs` | Verifies the exact npm package contents |
 | `scripts/verify.sh` | Runs local and CI validation |
+| `.github/workflows/verify.yml` | Verifies pushes and pull requests |
+| `.github/workflows/publish.yml` | Publishes stable GitHub Releases to npm through OIDC |
+| `tests/` | Python, TypeScript, JavaScript, package, and workflow regression tests |
 
 ## License
 
