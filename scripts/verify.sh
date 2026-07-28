@@ -63,8 +63,12 @@ assert_tracked "src/participants.ts"
 assert_tracked "scripts/debate-participant-body.md"
 assert_tracked "scripts/gen-participants.ts"
 assert_tracked "scripts/generate_html.py"
+assert_tracked "scripts/render_markdown.mjs"
+assert_tracked "scripts/check_package.mjs"
 assert_tracked "scripts/verify.sh"
 assert_tracked "README.md"
+assert_tracked "tests/render_markdown.test.mjs"
+assert_tracked "tests/check_package.test.mjs"
 
 # npm publication metadata.
 assert_not_contains "package.json" '"private"'
@@ -186,8 +190,10 @@ assert_contains "src/debate.ts" "cheap"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to generate transcript HTML"
 python3 -m unittest discover -s tests -p 'test_*.py' || fail "Python test suite failed"
 
-test_output=$(node --test tests/*.test.ts 2>&1) || fail "test suite failed (run 'node --test tests/*.test.ts' for details)"
+test_output=$(node --test tests/*.test.ts tests/*.test.mjs 2>&1) || fail "test suite failed (run 'npm test' for details)"
 printf '%s\n' "$test_output" | grep -Fq "MODULE_TYPELESS_PACKAGE_JSON" && fail "test suite emitted MODULE_TYPELESS_PACKAGE_JSON warning"
+
+npm run pack:check || fail "npm package contents are incorrect"
 
 if [ ! -x "node_modules/.bin/tsc" ]; then
   fail "typescript not installed; run 'npm install' before verifying"
