@@ -92,9 +92,15 @@ def _parse_participants(
 
 
 def _sections(lines: list[str]) -> list[tuple[str, int, int]]:
-    headings = [
-        (line, index) for index, line in enumerate(lines) if line.startswith("## ")
-    ]
+    headings: list[tuple[str, int]] = []
+    for index, line in enumerate(lines):
+        if not line.startswith("## "):
+            continue
+        previous = index - 1
+        while previous >= 0 and not lines[previous].strip():
+            previous -= 1
+        if previous >= 0 and lines[previous] == "---":
+            headings.append((line, index))
     if not headings:
         raise TranscriptError("Transcript has no round or synthesis sections")
     return [

@@ -108,6 +108,19 @@ class ParseTranscriptTests(unittest.TestCase):
             transcript.final_synthesis, "Use <safe> output & preserve quotes."
         )
 
+    def test_preserves_level_two_headings_inside_turns_and_synthesis(self) -> None:
+        heading_rich = VALID_TRANSCRIPT.replace(
+            "Anthropic first turn.", "## Verdict\n\nAnthropic first turn."
+        ).replace(
+            "Use <safe> output & preserve quotes.",
+            "## Final Assessment\n\nUse <safe> output & preserve quotes.",
+        )
+
+        transcript = parse_transcript(heading_rich)
+
+        self.assertIn("## Verdict", transcript.rounds[0].turns[1].text)
+        self.assertIn("## Final Assessment", transcript.final_synthesis)
+
     def test_rejects_missing_required_metadata(self) -> None:
         with self.assertRaisesRegex(TranscriptError, "Maximum rounds"):
             parse_transcript(VALID_TRANSCRIPT.replace("**Maximum rounds:** 3\n", ""))
@@ -137,8 +150,16 @@ class ParseTranscriptTests(unittest.TestCase):
         with self.assertRaisesRegex(TranscriptError, "consensus_reached"):
             parse_transcript(broken)
 
+    def test_rejects_separator_introduced_unsupported_section(self) -> None:
+        broken = VALID_TRANSCRIPT.replace(
+            "## Final Synthesis",
+            "## Unsupported\n\nUnexpected content.\n\n---\n\n## Final Synthesis",
+        )
+        with self.assertRaisesRegex(TranscriptError, "Unsupported level-two section"):
+            parse_transcript(broken)
+
     def test_requires_final_synthesis_to_be_the_last_section(self) -> None:
-        broken = VALID_TRANSCRIPT + "\n## Extension Decisions\n\nToo late.\n"
+        broken = VALID_TRANSCRIPT + "\n---\n\n## Extension Decisions\n\nToo late.\n"
         with self.assertRaisesRegex(TranscriptError, "last section"):
             parse_transcript(broken)
 
