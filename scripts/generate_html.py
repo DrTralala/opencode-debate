@@ -4,8 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import html
+import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -43,6 +45,17 @@ class Transcript:
     extension_decisions: str | None
     json_parsing_problems: str | None
     final_synthesis: str
+
+
+@dataclass(frozen=True)
+class RenderedContent:
+    rounds: tuple[tuple[str, str, str], ...]
+    extension_decisions: str | None
+    json_parsing_problems: str | None
+    final_synthesis: str
+
+
+MARKDOWN_HELPER_PATH = Path(__file__).with_name("render_markdown.mjs")
 
 
 TITLE_RE = re.compile(r"^# Debate: (.+)$")
@@ -294,17 +307,79 @@ def _escaped(value: str) -> str:
     return html.escape(value, quote=True)
 
 
+def render_markdown_items(
+    items: Sequence[str], helper_path: Path = MARKDOWN_HELPER_PATH
+) -> tuple[str, ...]:
+    payload = json.dumps({"items": list(items)}, ensure_ascii=False)
+    try:
+        completed = subprocess.run(
+            ["node", str(helper_path)],
+            input=payload,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TranscriptError(f"Markdown renderer could not start: {error}") from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"exit status {completed.returncode}"
+        raise TranscriptError(f"Markdown renderer failed: {detail}")
+    try:
+        response = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise TranscriptError("Markdown renderer returned invalid JSON") from error
+    if not isinstance(response, dict) or not isinstance(response.get("html"), list):
+        raise TranscriptError("Markdown renderer returned an invalid output shape")
+    rendered = response["html"]
+    if any(not isinstance(item, str) for item in rendered):
+        raise TranscriptError("Markdown renderer returned a non-string item")
+    if len(rendered) != len(items):
+        raise TranscriptError("Markdown renderer returned the wrong item count")
+    return tuple(rendered)
+
+
+def _render_content(transcript: Transcript) -> RenderedContent:
+    source_items = [
+        turn.text for round_ in transcript.rounds for turn in round_.turns
+    ]
+    if transcript.extension_decisions is not None:
+        source_items.append(transcript.extension_decisions)
+    if transcript.json_parsing_problems is not None:
+        source_items.append(transcript.json_parsing_problems)
+    source_items.append(transcript.final_synthesis)
+
+    rendered = iter(render_markdown_items(source_items))
+    rounds = tuple(
+        tuple(next(rendered) for _ in round_.turns)
+        for round_ in transcript.rounds
+    )
+    extension_decisions = (
+        next(rendered) if transcript.extension_decisions is not None else None
+    )
+    json_parsing_problems = (
+        next(rendered) if transcript.json_parsing_problems is not None else None
+    )
+    final_synthesis = next(rendered)
+    return RenderedContent(
+        rounds=rounds,  # type: ignore[arg-type]
+        extension_decisions=extension_decisions,
+        json_parsing_problems=json_parsing_problems,
+        final_synthesis=final_synthesis,
+    )
+
+
 def _badge(label: str, value: bool) -> str:
     css_class = "badge-ok" if value else "badge-no"
     state = "Yes" if value else "No"
     return f'<span class="{css_class}">{label}: {state}</span>'
 
 
-def _round_rows(round_: DebateRound) -> str:
+def _round_rows(round_: DebateRound, rendered_turns: Sequence[str]) -> str:
     if round_.number == 1:
         cells = "".join(
-            f'<td><div class="turn-text">{_escaped(turn.text)}</div></td>'
-            for turn in round_.turns
+            f'<td><div class="markdown-body">{turn_html}</div></td>'
+            for turn_html in rendered_turns
         )
         return f'<tr class="turn-row"><th scope="row">1</th>{cells}</tr>'
     status_cells = "".join(
@@ -316,8 +391,8 @@ def _round_rows(round_: DebateRound) -> str:
         for turn in round_.turns
     )
     turn_cells = "".join(
-        f'<td><div class="turn-text">{_escaped(turn.text)}</div></td>'
-        for turn in round_.turns
+        f'<td><div class="markdown-body">{turn_html}</div></td>'
+        for turn_html in rendered_turns
     )
     return (
         f'<tr class="status-row"><th scope="row" rowspan="2">{round_.number}</th>'
@@ -331,17 +406,21 @@ def _optional_section(title: str, value: str | None) -> str:
         return ""
     return (
         f'<section class="detail-section"><h2>{title}</h2>'
-        f'<div class="preserved-text">{_escaped(value)}</div></section>'
+        f'<div class="markdown-body">{value}</div></section>'
     )
 
 
 def render_html(transcript: Transcript) -> str:
+    content = _render_content(transcript)
     headers = "".join(
         f'<th>Participant {number}<span class="agent-name">'
         f"{_escaped(_agent_label(agent))}</span></th>"
         for number, agent in transcript.participants
     )
-    rows = "".join(_round_rows(round_) for round_ in transcript.rounds)
+    rows = "".join(
+        _round_rows(round_, rendered_turns)
+        for round_, rendered_turns in zip(transcript.rounds, content.rounds)
+    )
     metadata = (
         f"<dt>Date</dt><dd>{_escaped(transcript.date)}</dd>"
         f"<dt>Maximum rounds</dt><dd>{transcript.maximum_rounds}</dd>"
@@ -349,10 +428,10 @@ def render_html(transcript: Transcript) -> str:
         f"<dt>Consensus reached</dt><dd>{_escaped(transcript.consensus_reached)}</dd>"
     )
     extensions = _optional_section(
-        "Extension Decisions", transcript.extension_decisions
+        "Extension Decisions", content.extension_decisions
     )
     problems = _optional_section(
-        "JSON Parsing Problems", transcript.json_parsing_problems
+        "JSON Parsing Problems", content.json_parsing_problems
     )
     return f'''<!DOCTYPE html>
 <html lang="en">
@@ -398,7 +477,7 @@ def render_html(transcript: Transcript) -> str:
 <tbody>{rows}</tbody>
 </table>
 {extensions}{problems}
-<section class="summary-section"><h2>Final Synthesis</h2><div class="preserved-text">{_escaped(transcript.final_synthesis)}</div></section>
+<section class="summary-section"><h2>Final Synthesis</h2><div class="markdown-body">{content.final_synthesis}</div></section>
 </body>
 </html>
 '''

@@ -168,11 +168,66 @@ class RenderHtmlTests(unittest.TestCase):
     def setUp(self) -> None:
         self.html = render_html(parse_transcript(VALID_TRANSCRIPT))
 
-    def test_escapes_every_dynamic_text_location(self) -> None:
+    def test_escapes_literal_metadata_locations(self) -> None:
         self.assertIn("Compare &lt;alpha&gt; &amp; &quot;beta&quot;", self.html)
-        self.assertIn("Kimi&#x27;s first turn.", self.html)
-        self.assertIn("Use &lt;safe&gt; output &amp; preserve quotes.", self.html)
         self.assertNotIn("Compare <alpha>", self.html)
+
+    def test_renders_markdown_for_every_narrative_section(self) -> None:
+        markdown_rich = (
+            VALID_TRANSCRIPT.replace("Kimi's first turn.", "**Kimi** first turn.")
+            .replace("The user granted one more round.", "- Granted **one** round")
+            .replace("Participant 2 required one retry.", "`Participant 2` required one retry.")
+            .replace(
+                "Use <safe> output & preserve quotes.",
+                "## Final Assessment\n\nUse **safe** output.",
+            )
+        )
+
+        rendered = render_html(parse_transcript(markdown_rich))
+
+        self.assertIn("<strong>Kimi</strong> first turn.", rendered)
+        self.assertIn("<li>Granted <strong>one</strong> round</li>", rendered)
+        self.assertIn("<code>Participant 2</code> required one retry.", rendered)
+        self.assertIn("<h2>Final Assessment</h2>", rendered)
+        self.assertNotIn("**Kimi**", rendered)
+
+    def test_sanitizes_executable_markdown(self) -> None:
+        unsafe = VALID_TRANSCRIPT.replace(
+            "Anthropic first turn.",
+            '<script>alert(1)</script>\n\n[bad](javascript:alert(2))',
+        )
+        rendered = render_html(parse_transcript(unsafe))
+        self.assertNotIn("<script", rendered)
+        self.assertNotIn("javascript:", rendered)
+
+    def test_reports_markdown_helper_start_failure(self) -> None:
+        with patch("subprocess.run", side_effect=FileNotFoundError("node missing")):
+            with self.assertRaisesRegex(TranscriptError, "could not start"):
+                render_html(parse_transcript(VALID_TRANSCRIPT))
+
+    def test_reports_markdown_helper_nonzero_exit(self) -> None:
+        failed = __import__("subprocess").CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="bad input"
+        )
+        with patch("subprocess.run", return_value=failed):
+            with self.assertRaisesRegex(TranscriptError, "bad input"):
+                render_html(parse_transcript(VALID_TRANSCRIPT))
+
+    def test_rejects_malformed_markdown_helper_output(self) -> None:
+        malformed = __import__("subprocess").CompletedProcess(
+            args=[], returncode=0, stdout="not-json", stderr=""
+        )
+        with patch("subprocess.run", return_value=malformed):
+            with self.assertRaisesRegex(TranscriptError, "invalid JSON"):
+                render_html(parse_transcript(VALID_TRANSCRIPT))
+
+    def test_rejects_wrong_markdown_helper_item_count(self) -> None:
+        wrong_count = __import__("subprocess").CompletedProcess(
+            args=[], returncode=0, stdout='{"html":[]}', stderr=""
+        )
+        with patch("subprocess.run", return_value=wrong_count):
+            with self.assertRaisesRegex(TranscriptError, "item count"):
+                render_html(parse_transcript(VALID_TRANSCRIPT))
 
     def test_uses_one_table_without_round_headings(self) -> None:
         self.assertEqual(self.html.count("<table"), 1)
@@ -254,6 +309,20 @@ class GeneratorCliTests(unittest.TestCase):
                     generate(source)
             self.assertEqual(output.read_text(encoding="utf-8"), "old")
             self.assertEqual(list(debates.glob("*.tmp")), [])
+
+    def test_markdown_failure_preserves_existing_output(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            debates = root / "docs" / "debates"
+            debates.mkdir(parents=True)
+            source = debates / "2026-07-26T08-01-32Z-test.md"
+            output = source.with_suffix(".html")
+            source.write_text(VALID_TRANSCRIPT, encoding="utf-8")
+            output.write_text("old", encoding="utf-8")
+            with patch("subprocess.run", side_effect=FileNotFoundError("node missing")):
+                with self.assertRaisesRegex(TranscriptError, "could not start"):
+                    generate(source)
+            self.assertEqual(output.read_text(encoding="utf-8"), "old")
 
     def test_main_reports_validation_errors_without_a_traceback(self) -> None:
         stderr = StringIO()
