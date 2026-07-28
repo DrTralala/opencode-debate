@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml"><img alt="CI" src="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg" /></a>
-  <a href="https://github.com/DrTralala/opencode-debate/tree/v1.0.0"><img alt="Version: v1.0.0" src="https://img.shields.io/badge/version-v1.0.0-blue.svg?style=flat-square" /></a>
+  <a href="https://github.com/DrTralala/opencode-debate/tree/v1.0.1"><img alt="Version: v1.0.1" src="https://img.shields.io/badge/version-v1.0.1-blue.svg?style=flat-square" /></a>
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a>
   <a href="https://nodejs.org/"><img alt="Node.js >=24.15.0" src="https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square" /></a>
 </p>
@@ -37,7 +37,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@1.0.0"
+    "opencode-debate@1.0.1"
   ]
 }
 ```

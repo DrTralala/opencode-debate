@@ -262,6 +262,20 @@ test("coordinator permits only date and the exact generator command in Bash", ()
   assert.equal(permission.external_directory, "deny")
 })
 
+test("coordinator permits transcript paths relative to the OpenCode worktree", () => {
+  const permission = coordinatorPermission(
+    "python3 generator.py",
+    "/tmp/worktree/consumer",
+    "/tmp/worktree",
+  )
+
+  assert.deepEqual(permission.edit, {
+    "*": "deny",
+    "docs/debates/**": "allow",
+    "consumer/docs/debates/**": "allow",
+  })
+})
+
 test("static coordinator task permissions contain every registry agent", () => {
   const source = readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8")
   for (const { agent } of DEBATE_PARTICIPANTS) {

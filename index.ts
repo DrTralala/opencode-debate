@@ -1,4 +1,5 @@
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
+import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { DebatePlugin } from "./src/debate.ts"
 import { DEBATE_PARTICIPANTS } from "./src/participants.ts"
@@ -274,11 +275,20 @@ export function participantTaskPermission(): Record<string, "allow" | "deny"> {
   ])
 }
 
-export function coordinatorPermission(command: string) {
+export function coordinatorPermission(command: string, directory?: string, worktree?: string) {
+  const edit: Record<string, "allow" | "deny"> = {
+    "*": "deny",
+    "docs/debates/**": "allow",
+  }
+  if (directory && worktree) {
+    const transcriptPattern = relative(worktree, join(directory, "docs", "debates", "**")).replaceAll("\\", "/")
+    edit[transcriptPattern] = "allow"
+  }
+
   return {
     "*": "deny" as const,
     external_directory: "deny" as const,
-    edit: { "*": "deny" as const, "docs/debates/**": "allow" as const },
+    edit,
     bash: {
       "*": "deny" as const,
       "date -u +%Y-%m-%dT%H-%M-%SZ": "allow" as const,
@@ -310,7 +320,7 @@ const server: Plugin = async (input, options) => {
         mode: "primary",
         prompt: buildCoordinatorPrompt(generatorCommand),
         hidden: true,
-        permission: coordinatorPermission(generatorCommand),
+        permission: coordinatorPermission(generatorCommand, input.directory, input.worktree),
       } as any
 
       for (const participant of DEBATE_PARTICIPANTS) {
