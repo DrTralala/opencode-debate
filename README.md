@@ -1,11 +1,13 @@
 # OpenCode Debate
 
-<p align="center">
-  <a href="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml"><img alt="CI" src="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg" /></a>
-  <a href="https://github.com/DrTralala/opencode-debate/tree/v1.0.1"><img alt="Version: v1.0.1" src="https://img.shields.io/badge/version-v1.0.1-blue.svg?style=flat-square" /></a>
-  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a>
-  <a href="https://nodejs.org/"><img alt="Node.js >=24.15.0" src="https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square" /></a>
-</p>
+<table align="center">
+  <tr>
+    <td><a href="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml"><img alt="CI" src="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg" /></a></td>
+    <td><a href="https://github.com/DrTralala/opencode-debate/tree/v1.0.1"><img alt="Version: v1.0.1" src="https://img.shields.io/badge/version-v1.0.1-blue.svg?style=flat-square" /></a></td>
+    <td><a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a></td>
+    <td><a href="https://nodejs.org/"><img alt="Node.js >=24.15.0" src="https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square" /></a></td>
+  </tr>
+</table>
 
 Run structured, multi-round debates in OpenCode with three neutral participant agents backed by different language models, followed by a final synthesis.
 
