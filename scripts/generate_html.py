@@ -395,9 +395,9 @@ def _round_rows(round_: DebateRound, rendered_turns: Sequence[str]) -> str:
         for turn_html in rendered_turns
     )
     return (
-        f'<tr class="status-row"><th scope="row" rowspan="2">{round_.number}</th>'
-        f"{status_cells}</tr>"
-        f'<tr class="turn-row">{turn_cells}</tr>'
+        f'<tr class="turn-row"><th scope="row" rowspan="2">{round_.number}</th>'
+        f"{turn_cells}</tr>"
+        f'<tr class="status-row">{status_cells}</tr>'
     )
 
 
@@ -450,15 +450,23 @@ def render_html(transcript: Transcript) -> str:
   .metadata dt {{ font-weight: 600; }}
   .metadata dd {{ margin: 0; }}
   .topic-box {{ margin: 12px 0; padding: 12px 16px; border: 1px solid #997404; border-radius: 6px; background: #332701; white-space: pre-wrap; }}
-  table {{ width: 100%; table-layout: fixed; border-collapse: collapse; margin: 16px 0; }}
+  .debate-table {{ width: 100%; table-layout: fixed; border-collapse: collapse; margin: 16px 0; }}
   .round-column {{ width: 3rem; }}
   .participant-column {{ width: calc((100% - 3rem) / 3); }}
-  th, td {{ border: 1px solid #495057; padding: 10px 12px; vertical-align: top; }}
-  th {{ background: #343a40; color: #fff; text-align: center; font-size: 0.85rem; }}
-  td {{ background: #212529; font-size: 0.85rem; }}
+  .debate-table > thead > tr > th, .debate-table > tbody > tr > th, .debate-table > tbody > tr > td {{ border: 1px solid #495057; padding: 10px 12px; vertical-align: top; }}
+  .debate-table > thead > tr > th, .debate-table > tbody > tr > th {{ background: #343a40; color: #fff; text-align: center; font-size: 0.85rem; }}
+  .debate-table > tbody > tr > td {{ background: #212529; font-size: 0.85rem; }}
   .agent-name {{ display: block; color: #adb5bd; font-size: 0.75rem; font-weight: 400; }}
-  .status-row td {{ background: #2b3035; text-align: center; }}
-  .turn-text, .preserved-text {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+  .debate-table .status-row > td {{ background: #2b3035; text-align: center; }}
+  .markdown-body {{ overflow-wrap: anywhere; }}
+  .markdown-body > :first-child {{ margin-top: 0; }}
+  .markdown-body > :last-child {{ margin-bottom: 0; }}
+  .markdown-body pre {{ overflow-x: auto; padding: 10px; border-radius: 4px; background: #16191c; }}
+  .markdown-body code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }}
+  .markdown-body :not(pre) > code {{ padding: 1px 4px; border-radius: 3px; background: #343a40; }}
+  .markdown-body a {{ color: #6ea8fe; }}
+  .markdown-body table {{ width: 100%; border-collapse: collapse; margin: 8px 0; }}
+  .markdown-body th, .markdown-body td {{ border: 1px solid #495057; padding: 6px 8px; text-align: left; }}
   .badge-ok, .badge-no {{ display: inline-block; padding: 1px 6px; border-radius: 3px; color: #fff; font-size: 0.75rem; font-weight: 600; }}
   .badge-ok {{ background: #198754; }}
   .badge-no {{ background: #dc3545; }}
@@ -471,7 +479,7 @@ def render_html(transcript: Transcript) -> str:
 <section class="metadata"><dl>{metadata}</dl></section>
 <div class="topic-box"><strong>Topic:</strong> {_escaped(transcript.topic)}</div>
 <h2>Debate Rounds</h2>
-<table>
+<table class="debate-table">
 <colgroup><col class="round-column"><col class="participant-column"><col class="participant-column"><col class="participant-column"></colgroup>
 <thead><tr><th>Rd</th>{headers}</tr></thead>
 <tbody>{rows}</tbody>

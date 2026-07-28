@@ -240,11 +240,15 @@ class RenderHtmlTests(unittest.TestCase):
         self.assertIn(
             ".participant-column { width: calc((100% - 3rem) / 3); }", self.html
         )
+        self.assertIn('<table class="debate-table">', self.html)
+        self.assertIn(".markdown-body pre", self.html)
+        self.assertIn("overflow-x: auto", self.html)
 
-    def test_puts_round_two_statuses_in_a_dedicated_row(self) -> None:
-        status_at = self.html.index('<tr class="status-row">')
-        turn_at = self.html.index('<tr class="turn-row">', status_at)
-        self.assertLess(status_at, turn_at)
+    def test_puts_round_two_statuses_below_the_responses(self) -> None:
+        turn_marker = '<tr class="turn-row"><th scope="row" rowspan="2">2</th>'
+        turn_at = self.html.index(turn_marker)
+        status_at = self.html.index('<tr class="status-row">', turn_at)
+        self.assertLess(turn_at, status_at)
         self.assertEqual(self.html.count('<tr class="status-row">'), 1)
         self.assertIn('rowspan="2">2</th>', self.html)
 
