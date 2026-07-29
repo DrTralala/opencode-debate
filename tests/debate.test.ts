@@ -41,6 +41,7 @@ const DYNAMIC_REGISTRY: DebateRegistry = {
     default: ["one", "two", "three"],
     custom: ["four", "five", "six"],
   },
+  defaultSet: "custom",
 }
 
 test("default rounds when --rounds absent", () => {
@@ -170,7 +171,7 @@ test("unknown --set value is rejected", () => {
 })
 
 test("configured set names are accepted dynamically", () => {
-  const result = parseDebateArguments("--set:custom compare two options", DYNAMIC_REGISTRY.sets)
+  const result = parseDebateArguments("--set:custom compare two options", DYNAMIC_REGISTRY)
 
   assert.deepEqual(result, {
     ok: true,
@@ -181,7 +182,7 @@ test("configured set names are accepted dynamically", () => {
 })
 
 test("set errors list the dynamically configured choices", () => {
-  const result = parseDebateArguments("--set:missing compare two options", DYNAMIC_REGISTRY.sets)
+  const result = parseDebateArguments("--set:missing compare two options", DYNAMIC_REGISTRY)
 
   assert.equal(result.ok, false)
   if (!result.ok) {
@@ -192,10 +193,19 @@ test("set errors list the dynamically configured choices", () => {
 })
 
 test("inherited object properties are not accepted as configured sets", () => {
-  const result = parseDebateArguments("--set:toString compare two options", DYNAMIC_REGISTRY.sets)
+  const result = parseDebateArguments("--set:toString compare two options", DYNAMIC_REGISTRY)
 
   assert.equal(result.ok, false)
   if (!result.ok) assert.match(result.error, /Unsupported --set value/)
+})
+
+test("configured default set is used when --set is absent", () => {
+  assert.deepEqual(parseDebateArguments("compare two options", DYNAMIC_REGISTRY), {
+    ok: true,
+    topic: "compare two options",
+    rounds: 3,
+    set: "custom",
+  })
 })
 
 test("empty --set value is rejected", () => {
@@ -272,6 +282,22 @@ test("createDebatePlugin uses one registry for parsing and prompt resolution", a
   assert.match(output.parts[0]?.text ?? "", /Participant 1: four/)
 })
 
+test("configured default set reaches prompt participant resolution", async () => {
+  const hooks = await createDebatePlugin(DYNAMIC_REGISTRY)({} as never)
+  const before = hooks["command.execute.before"]
+  assert.ok(before)
+  const output: { parts: Part[] } = { parts: [] }
+
+  await before({ command: "debate", arguments: "my topic" } as never, output)
+
+  const firstPart = output.parts[0]
+  assert.equal(firstPart?.type, "text")
+  if (firstPart?.type === "text") {
+    assert.match(firstPart.text, /Participant set: custom/)
+    assert.match(firstPart.text, /Participant 1: four/)
+  }
+})
+
 test("debate agent consumes resolved participants without owning set order", () => {
   const prompt = readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8")
   assert.match(prompt, /Resolved participants/)
@@ -325,14 +351,85 @@ test("runtime registration uses every effective participant and omits absent var
   } as never)
   const configHook = hooks.config
   assert.ok(configHook)
-  const config: any = {}
+  const config: any = {
+    permission: {
+      bash: "ask",
+      task: {
+        one: "allow",
+        "*": "allow",
+        general: "ask",
+      },
+    },
+    agent: {
+      build: {
+        permission: {
+          edit: "allow",
+          task: {
+            one: "allow",
+            "*": "allow",
+          },
+        },
+      },
+      reviewer: { permission: "allow" },
+    },
+  }
 
   await configHook(config)
 
   assert.equal(loads, 1)
-  assert.deepEqual(Object.keys(config.agent).sort(), ["debate", "five", "four", "one", "six", "three", "two"])
+  assert.deepEqual(Object.keys(config.agent).sort(), [
+    "build",
+    "debate",
+    "five",
+    "four",
+    "one",
+    "reviewer",
+    "six",
+    "three",
+    "two",
+  ])
   assert.equal(config.agent.one.model, "provider/one")
   assert.equal(Object.hasOwn(config.agent.one, "variant"), false)
+  assert.deepEqual(config.permission, {
+    bash: "ask",
+    task: {
+      "*": "allow",
+      general: "ask",
+      one: "deny",
+      two: "deny",
+      three: "deny",
+      four: "deny",
+      five: "deny",
+      six: "deny",
+    },
+  })
+  assert.deepEqual(config.agent.build.permission, {
+    edit: "allow",
+    task: {
+      "*": "allow",
+      one: "deny",
+      two: "deny",
+      three: "deny",
+      four: "deny",
+      five: "deny",
+      six: "deny",
+    },
+  })
+  assert.deepEqual(config.agent.reviewer.permission, {
+    "*": "allow",
+    task: {
+      one: "deny",
+      two: "deny",
+      three: "deny",
+      four: "deny",
+      five: "deny",
+      six: "deny",
+    },
+  })
+  for (const name of ["one", "two", "three", "four", "five", "six"]) {
+    assert.equal(config.agent[name].hidden, true)
+    assert.equal(config.agent[name].permission.task, "deny")
+  }
   assert.deepEqual(config.agent.debate.permission.task, {
     "*": "deny",
     one: "allow",

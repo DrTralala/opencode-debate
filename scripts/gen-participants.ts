@@ -23,6 +23,7 @@ export function renderParticipantAgent(participant: DebateParticipant, body: str
     "---",
     `description: ${participant.description}`,
     "mode: subagent",
+    "hidden: true",
     `model: ${participant.model}`,
     ...(participant.variant === undefined ? [] : [`variant: ${participant.variant}`]),
     "permission:",

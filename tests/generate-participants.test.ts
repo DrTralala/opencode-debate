@@ -43,6 +43,7 @@ test("renderParticipantAgent combines participant metadata with the shared body"
   assert.match(rendered, /description: Neutral debate participant using OpenAI GPT-5.6 Sol \(xhigh\)/)
   assert.match(rendered, /model: openai\/gpt-5\.6-sol/)
   assert.match(rendered, /variant: xhigh/)
+  assert.match(rendered, /^hidden: true$/m)
   assert.match(rendered, /permission:\n  "\*": "deny"/)
   assert.match(rendered, /  read:\n    "\*": "allow"/)
   assert.match(rendered, /    "\*\.env": "deny"/)

@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v1.1.0](https://img.shields.io/badge/version-v1.1.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v1.1.0)
+[![Version: v2.0.0](https://img.shields.io/badge/version-v2.0.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.0.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -39,7 +39,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@1.1.0"
+    "opencode-debate@2.0.0"
   ]
 }
 ```
@@ -94,7 +94,7 @@ Options are recognised only before the topic begins.
 | Option | Description |
 |---|---|
 | `--rounds <number>` | Maximum rounds from 1 to 10. Defaults to 3. `--rounds=<number>` is also accepted. |
-| `--set:<name>` | Configured participant set. The package includes `default` and `cheap`; defaults to `default`. |
+| `--set:<name>` | Configured participant set. The package includes `default` and `cheap`; omission uses the default selected by `config.yaml`. |
 | `--` | End option parsing and treat all following text as the topic. |
 
 Invalid options produce an error without starting participant subagents.
@@ -108,45 +108,42 @@ Invalid options produce an error without starting participant subagents.
 
 ## Configuration
 
-The packaged source of truth is [`config.yaml`](config.yaml). Maintainers can edit it, run `node scripts/gen-participants.ts`, and restart OpenCode to update the project-local agents.
-
-Published npm installations also read one optional user overlay:
+[`config.yaml`](config.yaml) is the source of every participant and set shipped by the package. On each plugin initialisation, opencode-debate resolves this user path:
 
 ```text
 ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml
 ```
 
-When `XDG_CONFIG_HOME` is set, the path is `$XDG_CONFIG_HOME/opencode/opencode-debate/config.yaml`; otherwise it is `~/.config/opencode/opencode-debate/config.yaml`. There is no project-level participant override.
+When `XDG_CONFIG_HOME` is set, the path is `$XDG_CONFIG_HOME/opencode/opencode-debate/config.yaml`; otherwise it is `~/.config/opencode/opencode-debate/config.yaml`. If the file does not exist, the plugin atomically creates it as an exact copy of the packaged file. If it already exists, the plugin never rewrites or merges it.
 
-Every file starts with `version: 1`. To modify one field on an existing participant:
+The user file is a complete, authoritative version 2 configuration. Removing a participant or set keeps it removed, including after package upgrades. Existing version 1 files and former partial overlays are rejected; convert them to a complete version 2 file, or delete them to regenerate the packaged template on the next initialisation.
 
-```yaml
-version: 1
-participants:
-  debate-openai:
-    variant: high
-```
-
-To add a participant and a set that uses it:
+A complete minimal file has this shape:
 
 ```yaml
-version: 1
+version: 2
 participants:
-  debate-local:
-    description: Neutral debate participant using a local model
-    model: local/my-model
+  alpha:
+    model: provider/alpha
+  beta:
+    model: provider/beta
+  gamma:
+    model: provider/gamma
 sets:
-  local:
-    - debate-local
-    - debate-kimi
-    - debate-openai
+  primary:
+    default: yes
+    participants: [alpha, beta, gamma]
 ```
 
-Then invoke it with `/debate --set:local <topic>`.
+A participant requires a non-empty `model`. `description` and `variant` are optional non-empty strings. Without a description, the plugin uses `Neutral debate participant using <model>`; without a variant, the OpenCode agent configuration omits that field. Participants may be unused by every set and are still registered.
 
-Participant fields merge by participant ID, so omitted fields retain packaged values. A new participant must provide a non-empty `model`; `description` and `variant` are optional. Without a description, the plugin uses `Neutral debate participant using <model>`. Without a variant, the plugin omits that field from the OpenCode agent configuration. Supplying a set replaces that complete set array; unmentioned participants and sets remain unchanged. Configuration cannot delete packaged entries.
+Every set is a mapping whose `participants` array contains exactly three distinct declared participant IDs. The optional `default: yes` marker may appear on at most one set, and only the parsed string `yes` is valid. When no marker is present, the first set in YAML source order is selected. No set name is reserved, so a set named `default` is not required. The command's default rounds are 3; `--rounds` remains the override.
 
-Duplicate YAML keys, unknown fields, unsupported versions, incomplete participants, sets other than exactly three distinct IDs, and unknown participant references are errors. A missing user file silently uses packaged defaults. Any invalid user file is logged with its absolute path and field path, then plugin initialisation stops instead of silently using a potentially different provider or cost profile. Configuration is loaded once, so restart OpenCode after every change.
+Duplicate YAML keys, unknown fields, unsupported versions, incomplete participants, malformed sets, and unknown participant references stop plugin initialisation. Errors identify the absolute file and field path; creation and read errors also report the filesystem operation and cause. There is no implicit in-memory fallback.
+
+Normal agents are denied Task access to the configured debate participants; only the hidden debate coordinator receives exact Task allows for them. Hiding removes participant autocomplete visibility, but OpenCode still lets a user invoke an exact participant name manually with `@name`. This is not a security boundary.
+
+Configuration is loaded once. After editing or deleting the user file, quit and restart OpenCode. Maintainers changing the packaged file should also run `node scripts/gen-participants.ts` to update the project-local generated agents before restarting.
 
 Provider availability and supported variants can change independently of this repository.
 
@@ -185,7 +182,7 @@ This runs repository contract checks, generated-agent and prompt drift detection
 | `.opencode/agents/debate-*.md` | Generated project-local participant definitions |
 | `.opencode/plugin/debate.ts` | Loads the project-local plugin bridge |
 | `src/debate.ts` | Parses options and builds canonical debate requests |
-| `src/participants.ts` | Loads, validates, merges, and normalises participant YAML |
+| `src/participants.ts` | Creates, loads, validates, and normalises authoritative participant YAML |
 | `scripts/debate-participant-body.md` | Shared participant instructions |
 | `scripts/gen-participants.ts` | Generates participant agent files |
 | `scripts/generate_html.py` | Parses Markdown transcripts and atomically generates HTML |

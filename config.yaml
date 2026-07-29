@@ -1,4 +1,4 @@
-version: 1
+version: 2
 participants:
   debate-openai:
     description: Neutral debate participant using OpenAI GPT-5.6 Sol (xhigh)
@@ -22,10 +22,13 @@ participants:
     variant: max
 sets:
   default:
-    - debate-kimi
-    - debate-anthropic
-    - debate-openai
+    default: yes
+    participants:
+      - debate-kimi
+      - debate-anthropic
+      - debate-openai
   cheap:
-    - debate-glm
-    - debate-qwen
-    - debate-kimi
+    participants:
+      - debate-glm
+      - debate-qwen
+      - debate-kimi

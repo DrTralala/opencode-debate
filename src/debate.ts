@@ -1,8 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import type { Part, TextPart } from "@opencode-ai/sdk"
 import {
-  DEBATE_PARTICIPANTS,
   DEBATE_PARTICIPANT_SETS,
+  DEBATE_REGISTRY,
   type DebateParticipantSets,
   type DebateRegistry,
   type DebateSet,
@@ -14,7 +14,6 @@ type ParsedDebateArguments =
 
 const DEFAULT_ROUNDS = 3
 const MAX_ROUNDS = 10
-const DEFAULT_SET: DebateSet = "default"
 
 function setUsage(sets: DebateParticipantSets): string {
   const choices = Object.keys(sets).map((name) => `--set:${name}`)
@@ -24,14 +23,15 @@ function setUsage(sets: DebateParticipantSets): string {
 
 export function parseDebateArguments(
   args: string,
-  sets: DebateParticipantSets = DEBATE_PARTICIPANT_SETS,
+  registry: DebateRegistry = DEBATE_REGISTRY,
 ): ParsedDebateArguments {
   args = trimSurroundingQuotes(args)
 
+  const sets = registry.sets
   let index = 0
   let rounds = DEFAULT_ROUNDS
   let roundsSeen = false
-  let set = DEFAULT_SET
+  let set = registry.defaultSet
   let setSeen = false
 
   while (index < args.length) {
@@ -125,7 +125,7 @@ function resolvedParticipants(set: DebateSet, sets: DebateParticipantSets): stri
 export function validPrompt(
   topic: string,
   rounds: number,
-  set: DebateSet = DEFAULT_SET,
+  set: DebateSet,
   token: string = randomDelimiter(),
   sets: DebateParticipantSets = DEBATE_PARTICIPANT_SETS,
 ): string {
@@ -185,7 +185,7 @@ export function createDebatePlugin(registry: DebateRegistry): Plugin {
     "command.execute.before": async (input, output) => {
       if (input.command !== "debate") return
 
-      const parsed = parseDebateArguments(input.arguments, registry.sets)
+      const parsed = parseDebateArguments(input.arguments, registry)
       replaceParts(
         output,
         parsed.ok
@@ -196,7 +196,4 @@ export function createDebatePlugin(registry: DebateRegistry): Plugin {
   })
 }
 
-export const DebatePlugin: Plugin = createDebatePlugin({
-  participants: DEBATE_PARTICIPANTS,
-  sets: DEBATE_PARTICIPANT_SETS,
-})
+export const DebatePlugin: Plugin = createDebatePlugin(DEBATE_REGISTRY)

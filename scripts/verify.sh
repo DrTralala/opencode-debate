@@ -88,17 +88,22 @@ assert_contains "package.json" '"scripts/generate_html.py"'
 assert_contains "package.json" '"publishConfig": {'
 assert_contains "package.json" '"access": "public"'
 assert_contains "README.md" '"opencode-debate@latest"'
-assert_contains "README.md" '"opencode-debate@1.1.0"'
+assert_contains "README.md" '"opencode-debate@2.0.0"'
 assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
 assert_not_contains "README.md" 'this package is not published to npm'
-assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v1.1.0'
-assert_contains "README.md" 'img.shields.io/badge/version-v1.1.0-blue.svg?style=flat-square'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v2.0.0'
+assert_contains "README.md" 'img.shields.io/badge/version-v2.0.0-blue.svg?style=flat-square'
 assert_contains "README.md" 'Python 3.9 or later'
 assert_contains "README.md" 'docs/debates/'
 assert_contains "README.md" 'GPT-5.6 Sol, `xhigh`'
 assert_contains "README.md" '${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml'
-assert_contains "README.md" 'Participant fields merge by participant ID'
-assert_contains "README.md" 'restart OpenCode'
+assert_contains "README.md" 'atomically creates it as an exact copy'
+assert_contains "README.md" 'complete, authoritative version 2 configuration'
+assert_contains "README.md" 'first set in YAML source order'
+assert_contains "README.md" 'quit and restart OpenCode'
+assert_contains "README.md" 'exact participant name manually with `@name`'
+assert_not_contains "README.md" 'Participant fields merge by participant ID'
+assert_not_contains "README.md" 'missing user file silently uses packaged defaults'
 assert_not_contains "README.md" 'GPT-5.6 Sol Pro'
 assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
 
@@ -178,6 +183,7 @@ assert_not_contains ".opencode/agents/debate.md" "bash: allow"
 # permissions, read-only body. Model IDs are intentionally not hard-coded here.
 for agent in debate-openai debate-glm debate-kimi debate-anthropic debate-qwen; do
   assert_contains ".opencode/agents/$agent.md" "mode: subagent"
+  assert_contains ".opencode/agents/$agent.md" "hidden: true"
   assert_contains ".opencode/agents/$agent.md" "model:"
   assert_contains ".opencode/agents/$agent.md" "variant:"
   assert_contains ".opencode/agents/$agent.md" '  "*": "deny"'
@@ -213,6 +219,8 @@ assert_contains "src/debate.ts" "--set:"
 assert_contains "src/debate.ts" "setUsage"
 assert_contains "src/debate.ts" "Participant set"
 assert_contains "src/debate.ts" "Resolved participants"
+assert_not_contains "src/debate.ts" "DEFAULT_SET"
+assert_line "config.yaml" "version: 2"
 assert_contains "config.yaml" "  cheap:"
 
 # Behavioural checks: Python and Node unit tests and TypeScript typechecking.

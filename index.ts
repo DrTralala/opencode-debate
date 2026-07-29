@@ -273,6 +273,41 @@ export const PARTICIPANT_PERMISSION = {
   skill: "deny" as const,
 }
 
+export type PermissionAction = "allow" | "ask" | "deny"
+export type TaskPermission = PermissionAction | Record<string, PermissionAction>
+export type PermissionConfiguration = PermissionAction | Record<string, unknown>
+
+export function participantTaskDenials(
+  existing: TaskPermission | undefined,
+  participants: readonly DebateParticipant[] = DEBATE_PARTICIPANTS,
+): Record<string, PermissionAction> {
+  const participantNames = new Set(participants.map(({ agent }) => agent))
+  const retained: [string, PermissionAction][] = typeof existing === "object"
+    ? Object.entries(existing).filter(([pattern]) => !participantNames.has(pattern))
+    : existing === undefined
+      ? []
+      : [["*", existing]]
+  return Object.fromEntries([
+    ...retained,
+    ...participants.map(({ agent }) => [agent, "deny"] as const),
+  ])
+}
+
+export function denyParticipantTasks(
+  permission: PermissionConfiguration | undefined,
+  participants: readonly DebateParticipant[] = DEBATE_PARTICIPANTS,
+): Record<string, unknown> {
+  const normalised: Record<string, unknown> = typeof permission === "object" && permission !== null
+    ? permission
+    : permission === undefined
+      ? {}
+      : { "*": permission }
+  return {
+    ...normalised,
+    task: participantTaskDenials(normalised.task as TaskPermission | undefined, participants),
+  }
+}
+
 export function participantTaskPermission(
   participants: readonly DebateParticipant[] = DEBATE_PARTICIPANTS,
 ): Record<string, "allow" | "deny"> {
@@ -338,8 +373,20 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
     return {
       ...debateHooks,
       config: async (config) => {
+        config.permission = denyParticipantTasks(
+          config.permission as PermissionConfiguration | undefined,
+          registry.participants,
+        ) as typeof config.permission
         if (!config.agent) config.agent = {}
         if (!config.command) config.command = {}
+
+        for (const [agentName, agentConfig] of Object.entries(config.agent)) {
+          if (agentName === "debate" || agentConfig === undefined) continue
+          agentConfig.permission = denyParticipantTasks(
+            agentConfig.permission as PermissionConfiguration | undefined,
+            registry.participants,
+          ) as typeof agentConfig.permission
+        }
 
         config.command.debate = {
           template: "$ARGUMENTS",
@@ -361,6 +408,7 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
             mode: "subagent",
             model: participant.model,
             prompt: PARTICIPANT_PROMPT,
+            hidden: true,
             permission: PARTICIPANT_PERMISSION,
             ...(participant.variant === undefined ? {} : { variant: participant.variant }),
           } as any
