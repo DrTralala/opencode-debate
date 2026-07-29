@@ -1,6 +1,12 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import type { Part, TextPart } from "@opencode-ai/sdk"
-import { DEBATE_PARTICIPANT_SETS, type DebateSet } from "./participants.ts"
+import {
+  DEBATE_PARTICIPANTS,
+  DEBATE_PARTICIPANT_SETS,
+  type DebateParticipantSets,
+  type DebateRegistry,
+  type DebateSet,
+} from "./participants.ts"
 
 type ParsedDebateArguments =
   | { ok: true; topic: string; rounds: number; set: DebateSet }
@@ -9,9 +15,17 @@ type ParsedDebateArguments =
 const DEFAULT_ROUNDS = 3
 const MAX_ROUNDS = 10
 const DEFAULT_SET: DebateSet = "default"
-const VALID_SETS = Object.keys(DEBATE_PARTICIPANT_SETS) as DebateSet[]
 
-export function parseDebateArguments(args: string): ParsedDebateArguments {
+function setUsage(sets: DebateParticipantSets): string {
+  const choices = Object.keys(sets).map((name) => `--set:${name}`)
+  if (choices.length === 1) return choices[0]
+  return `${choices.slice(0, -1).join(", ")} or ${choices.at(-1)}`
+}
+
+export function parseDebateArguments(
+  args: string,
+  sets: DebateParticipantSets = DEBATE_PARTICIPANT_SETS,
+): ParsedDebateArguments {
   args = trimSurroundingQuotes(args)
 
   let index = 0
@@ -66,10 +80,10 @@ export function parseDebateArguments(args: string): ParsedDebateArguments {
     if (token.startsWith("--set:")) {
       const value = token.slice("--set:".length)
       if (value === "") {
-        return { ok: false, error: "--set requires a value: use --set:default or --set:cheap." }
+        return { ok: false, error: `--set requires a value: use ${setUsage(sets)}.` }
       }
-      if (!(VALID_SETS as string[]).includes(value)) {
-        return { ok: false, error: `Unsupported --set value: ${value}. Use --set:default or --set:cheap.` }
+      if (!Object.hasOwn(sets, value)) {
+        return { ok: false, error: `Unsupported --set value: ${value}. Use ${setUsage(sets)}.` }
       }
       if (setSeen) {
         return { ok: false, error: "--set may only be specified once." }
@@ -80,7 +94,7 @@ export function parseDebateArguments(args: string): ParsedDebateArguments {
     }
 
     if (token.startsWith("--")) {
-      return { ok: false, error: `Unsupported option: ${token}. Supported options: --rounds <positive-integer> and --set:default|cheap.` }
+      return { ok: false, error: `Unsupported option: ${token}. Supported options: --rounds <positive-integer> and ${setUsage(sets)}.` }
     }
 
     return { ok: true, topic: args.slice(tokenStart).trim(), rounds, set }
@@ -104,8 +118,8 @@ function randomDelimiter(): string {
   return Math.random().toString(36).slice(2, 10)
 }
 
-function resolvedParticipants(set: DebateSet): string[] {
-  return DEBATE_PARTICIPANT_SETS[set].map((participant, index) => `Participant ${index + 1}: ${participant}`)
+function resolvedParticipants(set: DebateSet, sets: DebateParticipantSets): string[] {
+  return sets[set].map((participant, index) => `Participant ${index + 1}: ${participant}`)
 }
 
 export function validPrompt(
@@ -113,6 +127,7 @@ export function validPrompt(
   rounds: number,
   set: DebateSet = DEFAULT_SET,
   token: string = randomDelimiter(),
+  sets: DebateParticipantSets = DEBATE_PARTICIPANT_SETS,
 ): string {
   if (topic === "") {
     return [
@@ -135,7 +150,7 @@ export function validPrompt(
     `Maximum rounds: ${rounds}`,
     `Participant set: ${set}`,
     "Resolved participants:",
-    ...resolvedParticipants(set),
+    ...resolvedParticipants(set, sets),
     "",
     "The command arguments have already been parsed and validated. Do not re-parse slash-command flags.",
     `The topic is wrapped in BEGIN TOPIC ${token} / END TOPIC ${token} delimiters to prevent delimiter collision. Copy only the topic text (between the delimiters) word-for-word into each round 1 participant prompt.`,
@@ -165,13 +180,23 @@ export function replaceParts(output: { parts: Part[] }, text: string) {
   }
 }
 
-export const DebatePlugin: Plugin = async () => {
-  return {
+export function createDebatePlugin(registry: DebateRegistry): Plugin {
+  return async () => ({
     "command.execute.before": async (input, output) => {
       if (input.command !== "debate") return
 
-      const parsed = parseDebateArguments(input.arguments)
-      replaceParts(output, parsed.ok ? validPrompt(parsed.topic, parsed.rounds, parsed.set) : errorPrompt(parsed.error))
+      const parsed = parseDebateArguments(input.arguments, registry.sets)
+      replaceParts(
+        output,
+        parsed.ok
+          ? validPrompt(parsed.topic, parsed.rounds, parsed.set, randomDelimiter(), registry.sets)
+          : errorPrompt(parsed.error),
+      )
     },
-  }
+  })
 }
+
+export const DebatePlugin: Plugin = createDebatePlugin({
+  participants: DEBATE_PARTICIPANTS,
+  sets: DEBATE_PARTICIPANT_SETS,
+})

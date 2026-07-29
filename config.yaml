@@ -1,0 +1,31 @@
+version: 1
+participants:
+  debate-openai:
+    description: Neutral debate participant using OpenAI GPT-5.6 Sol (xhigh)
+    model: openai/gpt-5.6-sol
+    variant: xhigh
+  debate-glm:
+    description: Neutral debate participant using GLM-5.2 from OpenCode Go
+    model: opencode-go/glm-5.2
+    variant: max
+  debate-kimi:
+    description: Neutral debate participant using Kimi K3 from OpenCode Go
+    model: opencode-go/kimi-k3
+    variant: max
+  debate-anthropic:
+    description: Neutral debate participant using Claude Opus 5 through OpenRouter
+    model: openrouter/anthropic/claude-opus-5
+    variant: high
+  debate-qwen:
+    description: Neutral debate participant using Qwen 3.7 Max from OpenCode Go
+    model: opencode-go/qwen3.7-max
+    variant: max
+sets:
+  default:
+    - debate-kimi
+    - debate-anthropic
+    - debate-openai
+  cheap:
+    - debate-glm
+    - debate-qwen
+    - debate-kimi

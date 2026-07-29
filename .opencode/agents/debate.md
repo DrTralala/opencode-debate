@@ -16,9 +16,9 @@ permission:
   task:
     "*": "deny"
     "debate-openai": "allow"
-    "debate-anthropic": "allow"
     "debate-glm": "allow"
     "debate-kimi": "allow"
+    "debate-anthropic": "allow"
     "debate-qwen": "allow"
 ---
 

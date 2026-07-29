@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 const expected = [
   "LICENSE",
   "README.md",
+  "config.yaml",
   "index.ts",
   "package.json",
   "scripts/generate_html.py",

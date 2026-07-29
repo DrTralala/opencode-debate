@@ -2,14 +2,22 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import type { Part } from "@opencode-ai/sdk"
-import { parseDebateArguments, trimSurroundingQuotes, validPrompt, errorPrompt, replaceParts } from "../src/debate.ts"
-import { DEBATE_PARTICIPANTS } from "../src/participants.ts"
+import {
+  createDebatePlugin,
+  errorPrompt,
+  parseDebateArguments,
+  replaceParts,
+  trimSurroundingQuotes,
+  validPrompt,
+} from "../src/debate.ts"
+import { DEBATE_PARTICIPANTS, DebateConfigError, type DebateRegistry } from "../src/participants.ts"
 import {
   COORDINATOR_PROMPT,
   PARTICIPANT_PERMISSION,
   PARTICIPANT_PROMPT,
   buildCoordinatorPrompt,
   coordinatorPermission,
+  createServer,
   htmlGeneratorCommand,
   participantTaskPermission,
 } from "../index.ts"
@@ -18,6 +26,21 @@ function markdownBody(source: string): string {
   const match = /^---\n[\s\S]*?\n---\n\n([\s\S]*)$/.exec(source)
   assert.ok(match, "expected YAML frontmatter")
   return match[1].trimEnd()
+}
+
+const DYNAMIC_REGISTRY: DebateRegistry = {
+  participants: [
+    { agent: "one", description: "One", model: "provider/one" },
+    { agent: "two", description: "Two", model: "provider/two" },
+    { agent: "three", description: "Three", model: "provider/three" },
+    { agent: "four", description: "Four", model: "provider/four" },
+    { agent: "five", description: "Five", model: "provider/five" },
+    { agent: "six", description: "Six", model: "provider/six" },
+  ],
+  sets: {
+    default: ["one", "two", "three"],
+    custom: ["four", "five", "six"],
+  },
 }
 
 test("default rounds when --rounds absent", () => {
@@ -146,6 +169,35 @@ test("unknown --set value is rejected", () => {
   if (!r.ok) assert.match(r.error, /Unsupported --set value/)
 })
 
+test("configured set names are accepted dynamically", () => {
+  const result = parseDebateArguments("--set:custom compare two options", DYNAMIC_REGISTRY.sets)
+
+  assert.deepEqual(result, {
+    ok: true,
+    topic: "compare two options",
+    rounds: 3,
+    set: "custom",
+  })
+})
+
+test("set errors list the dynamically configured choices", () => {
+  const result = parseDebateArguments("--set:missing compare two options", DYNAMIC_REGISTRY.sets)
+
+  assert.equal(result.ok, false)
+  if (!result.ok) {
+    assert.match(result.error, /--set:default/)
+    assert.match(result.error, /--set:custom/)
+    assert.doesNotMatch(result.error, /--set:cheap/)
+  }
+})
+
+test("inherited object properties are not accepted as configured sets", () => {
+  const result = parseDebateArguments("--set:toString compare two options", DYNAMIC_REGISTRY.sets)
+
+  assert.equal(result.ok, false)
+  if (!result.ok) assert.match(result.error, /Unsupported --set value/)
+})
+
 test("empty --set value is rejected", () => {
   const r = parseDebateArguments("--set: compare two options")
   assert.equal(r.ok, false)
@@ -198,6 +250,28 @@ test("validPrompt emits the default participant set by default", () => {
   assert.match(p, /Participant 3: debate-openai/)
 })
 
+test("validPrompt resolves participants from supplied sets", () => {
+  const prompt = validPrompt("my topic", 2, "custom", "abc123", DYNAMIC_REGISTRY.sets)
+
+  assert.match(prompt, /Participant set: custom/)
+  assert.match(prompt, /Participant 1: four/)
+  assert.match(prompt, /Participant 2: five/)
+  assert.match(prompt, /Participant 3: six/)
+})
+
+test("createDebatePlugin uses one registry for parsing and prompt resolution", async () => {
+  const plugin = createDebatePlugin(DYNAMIC_REGISTRY)
+  const hooks = await plugin({} as never)
+  const before = hooks["command.execute.before"]
+  assert.ok(before)
+  const output: { parts: Part[] } = { parts: [] }
+
+  await before({ command: "debate", arguments: "--set:custom my topic" } as never, output)
+
+  assert.equal(output.parts[0]?.type, "text")
+  assert.match(output.parts[0]?.text ?? "", /Participant 1: four/)
+})
+
 test("debate agent consumes resolved participants without owning set order", () => {
   const prompt = readFileSync(new URL("../.opencode/agents/debate.md", import.meta.url), "utf8")
   assert.match(prompt, /Resolved participants/)
@@ -236,6 +310,85 @@ test("task permissions are derived from the participant registry", () => {
     "*": "deny",
     ...Object.fromEntries(DEBATE_PARTICIPANTS.map(({ agent }) => [agent, "allow"])),
   })
+})
+
+test("runtime registration uses every effective participant and omits absent variants", async () => {
+  let loads = 0
+  const server = createServer(() => {
+    loads++
+    return DYNAMIC_REGISTRY
+  })
+  const hooks = await server({
+    client: { app: { log: async () => ({ data: true }) } },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  } as never)
+  const configHook = hooks.config
+  assert.ok(configHook)
+  const config: any = {}
+
+  await configHook(config)
+
+  assert.equal(loads, 1)
+  assert.deepEqual(Object.keys(config.agent).sort(), ["debate", "five", "four", "one", "six", "three", "two"])
+  assert.equal(config.agent.one.model, "provider/one")
+  assert.equal(Object.hasOwn(config.agent.one, "variant"), false)
+  assert.deepEqual(config.agent.debate.permission.task, {
+    "*": "deny",
+    one: "allow",
+    two: "allow",
+    three: "allow",
+    four: "allow",
+    five: "allow",
+    six: "allow",
+  })
+})
+
+test("configuration failures are logged once and abort plugin initialisation", async () => {
+  const error = new DebateConfigError("/tmp/bad.yaml", "participants.bad.model", "expected a non-empty string")
+  const logs: unknown[] = []
+  const server = createServer(() => {
+    throw error
+  })
+
+  await assert.rejects(
+    server({
+      client: {
+        app: {
+          log: async (entry: unknown) => {
+            logs.push(entry)
+            return { data: true }
+          },
+        },
+      },
+      directory: "/tmp/project",
+      worktree: "/tmp/project",
+    } as never),
+    (thrown: unknown) => thrown === error,
+  )
+  assert.deepEqual(logs, [{
+    body: {
+      service: "opencode-debate",
+      level: "error",
+      message: error.message,
+    },
+  }])
+})
+
+test("a logging failure does not mask the configuration failure", async () => {
+  const error = new DebateConfigError("/tmp/bad.yaml", "$", "bad YAML")
+  const server = createServer(() => {
+    throw error
+  })
+
+  await assert.rejects(
+    server({
+      client: { app: { log: async () => { throw new Error("logging unavailable") } } },
+      directory: "/tmp/project",
+      worktree: "/tmp/project",
+    } as never),
+    (thrown: unknown) => thrown === error,
+  )
 })
 
 test("participant permissions are deny-by-default without shell or external access", () => {

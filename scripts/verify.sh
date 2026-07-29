@@ -17,6 +17,10 @@ assert_not_tracked() {
   [ -z "$(git ls-files -- "$1")" ] || fail "local-only artefact is tracked: $1"
 }
 
+assert_present() {
+  [ -f "$1" ] || fail "required file missing: $1"
+}
+
 assert_contains() {
   file=$1
   pattern=$2
@@ -45,8 +49,10 @@ assert_not_line() {
 assert_tracked ".opencode/commands/debate.md"
 assert_tracked ".opencode/plugin/debate.ts"
 assert_tracked "index.ts"
+assert_present "config.yaml"
 assert_tracked "LICENSE"
 assert_tracked "tests/debate.test.ts"
+assert_present "tests/participants.test.ts"
 assert_tracked "tests/test_generate_html.py"
 assert_tracked ".opencode/agents/debate.md"
 assert_tracked ".opencode/agents/debate-openai.md"
@@ -76,18 +82,23 @@ assert_tracked "tests/publish_workflow.test.mjs"
 assert_not_contains "package.json" '"private"'
 assert_contains "package.json" '"author": "DrTralala <drtralala@outlook.com>"'
 assert_contains "package.json" '"files": ['
+assert_contains "package.json" '"config.yaml"'
+assert_contains "package.json" '"yaml": "2.9.0"'
 assert_contains "package.json" '"scripts/generate_html.py"'
 assert_contains "package.json" '"publishConfig": {'
 assert_contains "package.json" '"access": "public"'
 assert_contains "README.md" '"opencode-debate@latest"'
-assert_contains "README.md" '"opencode-debate@1.0.1"'
+assert_contains "README.md" '"opencode-debate@1.1.0"'
 assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
 assert_not_contains "README.md" 'this package is not published to npm'
-assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v1.0.1'
-assert_contains "README.md" 'img.shields.io/badge/version-v1.0.1-blue.svg?style=flat-square'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v1.1.0'
+assert_contains "README.md" 'img.shields.io/badge/version-v1.1.0-blue.svg?style=flat-square'
 assert_contains "README.md" 'Python 3.9 or later'
 assert_contains "README.md" 'docs/debates/'
 assert_contains "README.md" 'GPT-5.6 Sol, `xhigh`'
+assert_contains "README.md" '${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml'
+assert_contains "README.md" 'Participant fields merge by participant ID'
+assert_contains "README.md" 'restart OpenCode'
 assert_not_contains "README.md" 'GPT-5.6 Sol Pro'
 assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
 
@@ -109,11 +120,11 @@ assert_line ".gitignore" "!.env.example"
 assert_line ".gitignore" "__pycache__/"
 
 # README badges describe only services and requirements this repository uses.
-assert_contains "README.md" 'alt="CI"'
+assert_contains "README.md" '[![CI]('
 assert_contains "README.md" 'actions/workflows/verify.yml/badge.svg'
-assert_contains "README.md" 'href="./LICENSE"'
+assert_contains "README.md" '](./LICENSE)'
 assert_contains "README.md" 'img.shields.io/badge/License-MIT-blue.svg?style=flat-square'
-assert_contains "README.md" 'href="https://nodejs.org/"'
+assert_contains "README.md" '](https://nodejs.org/)'
 assert_contains "README.md" 'img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square'
 assert_not_contains "README.md" 'img.shields.io/npm'
 
@@ -197,11 +208,12 @@ done
 command -v node >/dev/null 2>&1 || fail "node is required to run the test suite"
 node scripts/gen-participants.ts --check || fail "participant agents are stale; run 'node scripts/gen-participants.ts'"
 
-# The plugin parses --set:default|cheap and emits resolved participants.
+# The plugin parses configured --set values and emits resolved participants.
 assert_contains "src/debate.ts" "--set:"
+assert_contains "src/debate.ts" "setUsage"
 assert_contains "src/debate.ts" "Participant set"
 assert_contains "src/debate.ts" "Resolved participants"
-assert_contains "src/debate.ts" "cheap"
+assert_contains "config.yaml" "  cheap:"
 
 # Behavioural checks: Python and Node unit tests and TypeScript typechecking.
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to generate transcript HTML"

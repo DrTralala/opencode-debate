@@ -1,13 +1,13 @@
 # OpenCode Debate
 
-<table align="center">
-  <tr>
-    <td><a href="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml"><img alt="CI" src="https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg" /></a></td>
-    <td><a href="https://github.com/DrTralala/opencode-debate/tree/v1.0.1"><img alt="Version: v1.0.1" src="https://img.shields.io/badge/version-v1.0.1-blue.svg?style=flat-square" /></a></td>
-    <td><a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a></td>
-    <td><a href="https://nodejs.org/"><img alt="Node.js >=24.15.0" src="https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square" /></a></td>
-  </tr>
-</table>
+<div align="center">
+
+[![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
+[![Version: v1.1.0](https://img.shields.io/badge/version-v1.1.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v1.1.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+[![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
+
+</div>
 
 Run structured, multi-round debates in OpenCode with three neutral participant agents backed by different language models, followed by a final synthesis.
 
@@ -18,7 +18,7 @@ Run structured, multi-round debates in OpenCode with three neutral participant a
 - Python 3.9 or later
 - Access to the providers used by your selected participant set
 
-## Install as an OpenCode Plugin
+## Installation
 
 For project-only installation, add the npm package to `plugin` in the project's `opencode.json`:
 
@@ -39,7 +39,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@1.0.1"
+    "opencode-debate@1.1.0"
   ]
 }
 ```
@@ -51,6 +51,10 @@ OpenCode installs and caches the npm package automatically. Do not run `npm inst
 ```
 
 The plugin entry point in `index.ts` registers `/debate`, the coordinator, and all participant agents at runtime. Consumer projects do not copy this repository's `.opencode/` files.
+
+## Uninstallation
+
+Remove the `opencode-debate` entry from the `plugin` array in your project or global OpenCode configuration. Optionally, delete the user configuration file at `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml`, then restart OpenCode.
 
 ## Development Checkout
 
@@ -79,10 +83,10 @@ Participant turns stay in their subagent sessions and transcripts; the main sess
 ## Usage
 
 ```text
-/debate review this repository for maintainability improvements
-/debate --rounds 5 compare two architecture options
-/debate --set:cheap compare two architecture options
-/debate --rounds=5 --set:cheap compare two architecture options
+/debate <topic>
+/debate --rounds 5 <topic> # 5 rounds instead of 3
+/debate --set:cheap <topic>
+/debate --rounds=5 --set:cheap <topic>
 ```
 
 Options are recognised only before the topic begins.
@@ -90,7 +94,7 @@ Options are recognised only before the topic begins.
 | Option | Description |
 |---|---|
 | `--rounds <number>` | Maximum rounds from 1 to 10. Defaults to 3. `--rounds=<number>` is also accepted. |
-| `--set:<name>` | Participant set: `default` or `cheap`. Defaults to `default`. |
+| `--set:<name>` | Configured participant set. The package includes `default` and `cheap`; defaults to `default`. |
 | `--` | End option parsing and treat all following text as the topic. |
 
 Invalid options produce an error without starting participant subagents.
@@ -102,7 +106,49 @@ Invalid options produce an error without starting participant subagents.
 | `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Opus 5) | `debate-openai` (GPT-5.6 Sol, `xhigh`) |
 | `cheap` | `debate-glm` (GLM-5.2) | `debate-qwen` (Qwen 3.7 Max) | `debate-kimi` (Kimi K3) |
 
-Participant metadata, provider model IDs, variants, and set ordering are defined in `src/participants.ts`. To override them, use a checkout or fork, edit that registry, run `node scripts/gen-participants.ts`, and restart OpenCode. Provider availability and supported variants can change independently of this repository.
+## Configuration
+
+The packaged source of truth is [`config.yaml`](config.yaml). Maintainers can edit it, run `node scripts/gen-participants.ts`, and restart OpenCode to update the project-local agents.
+
+Published npm installations also read one optional user overlay:
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml
+```
+
+When `XDG_CONFIG_HOME` is set, the path is `$XDG_CONFIG_HOME/opencode/opencode-debate/config.yaml`; otherwise it is `~/.config/opencode/opencode-debate/config.yaml`. There is no project-level participant override.
+
+Every file starts with `version: 1`. To modify one field on an existing participant:
+
+```yaml
+version: 1
+participants:
+  debate-openai:
+    variant: high
+```
+
+To add a participant and a set that uses it:
+
+```yaml
+version: 1
+participants:
+  debate-local:
+    description: Neutral debate participant using a local model
+    model: local/my-model
+sets:
+  local:
+    - debate-local
+    - debate-kimi
+    - debate-openai
+```
+
+Then invoke it with `/debate --set:local <topic>`.
+
+Participant fields merge by participant ID, so omitted fields retain packaged values. A new participant must provide a non-empty `model`; `description` and `variant` are optional. Without a description, the plugin uses `Neutral debate participant using <model>`. Without a variant, the plugin omits that field from the OpenCode agent configuration. Supplying a set replaces that complete set array; unmentioned participants and sets remain unchanged. Configuration cannot delete packaged entries.
+
+Duplicate YAML keys, unknown fields, unsupported versions, incomplete participants, sets other than exactly three distinct IDs, and unknown participant references are errors. A missing user file silently uses packaged defaults. Any invalid user file is logged with its absolute path and field path, then plugin initialisation stops instead of silently using a potentially different provider or cost profile. Configuration is loaded once, so restart OpenCode after every change.
+
+Provider availability and supported variants can change independently of this repository.
 
 ## Privacy and Cost
 
@@ -132,13 +178,14 @@ This runs repository contract checks, generated-agent and prompt drift detection
 | Path | Purpose |
 |---|---|
 | `package.json` | npm package metadata, runtime dependencies, and release scripts |
+| `config.yaml` | Packaged participant metadata and participant-set ordering |
 | `index.ts` | npm plugin entry point and runtime agent registration |
 | `.opencode/commands/debate.md` | Routes `/debate` to the project-local coordinator |
 | `.opencode/agents/debate.md` | Defines project-local orchestration, stopping, synthesis, and transcripts |
 | `.opencode/agents/debate-*.md` | Generated project-local participant definitions |
 | `.opencode/plugin/debate.ts` | Loads the project-local plugin bridge |
 | `src/debate.ts` | Parses options and builds canonical debate requests |
-| `src/participants.ts` | Defines participants and participant sets |
+| `src/participants.ts` | Loads, validates, merges, and normalises participant YAML |
 | `scripts/debate-participant-body.md` | Shared participant instructions |
 | `scripts/gen-participants.ts` | Generates participant agent files |
 | `scripts/generate_html.py` | Parses Markdown transcripts and atomically generates HTML |

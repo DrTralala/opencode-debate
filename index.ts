@@ -1,8 +1,13 @@
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
-import { DebatePlugin } from "./src/debate.ts"
-import { DEBATE_PARTICIPANTS } from "./src/participants.ts"
+import { createDebatePlugin } from "./src/debate.ts"
+import {
+  DEBATE_PARTICIPANTS,
+  loadEffectiveRegistry,
+  type DebateParticipant,
+  type DebateRegistry,
+} from "./src/participants.ts"
 
 const COORDINATOR_PROMPT_TEMPLATE = `You are the Debate agent for this project. Your job is to run \`/debate\` discussions inside the current OpenCode session by directly coordinating participant subagents with the \`task\` tool.
 
@@ -268,14 +273,21 @@ export const PARTICIPANT_PERMISSION = {
   skill: "deny" as const,
 }
 
-export function participantTaskPermission(): Record<string, "allow" | "deny"> {
+export function participantTaskPermission(
+  participants: readonly DebateParticipant[] = DEBATE_PARTICIPANTS,
+): Record<string, "allow" | "deny"> {
   return Object.fromEntries([
     ["*", "deny"],
-    ...DEBATE_PARTICIPANTS.map(({ agent }) => [agent, "allow"] as const),
+    ...participants.map(({ agent }) => [agent, "allow"] as const),
   ])
 }
 
-export function coordinatorPermission(command: string, directory?: string, worktree?: string) {
+export function coordinatorPermission(
+  command: string,
+  directory?: string,
+  worktree?: string,
+  participants: readonly DebateParticipant[] = DEBATE_PARTICIPANTS,
+) {
   const edit: Record<string, "allow" | "deny"> = {
     "*": "deny",
     "docs/debates/**": "allow",
@@ -295,47 +307,70 @@ export function coordinatorPermission(command: string, directory?: string, workt
       [command]: "allow" as const,
     },
     question: "allow" as const,
-    task: participantTaskPermission(),
+    task: participantTaskPermission(participants),
   }
 }
 
-const server: Plugin = async (input, options) => {
-  const debateHooks = await DebatePlugin(input, options)
-  const generatorCommand = htmlGeneratorCommand()
-
-  return {
-    ...debateHooks,
-    config: async (config) => {
-      if (!config.agent) config.agent = {}
-      if (!config.command) config.command = {}
-
-      config.command.debate = {
-        template: "$ARGUMENTS",
-        description: "Run a visible resumable-subagent debate",
-        agent: "debate",
+export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveRegistry): Plugin {
+  return async (input, options) => {
+    let registry: DebateRegistry
+    try {
+      registry = loadRegistry()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try {
+        await input.client.app.log({
+          body: {
+            service: "opencode-debate",
+            level: "error",
+            message,
+          },
+        })
+      } catch {
+        // Preserve the actionable configuration error if server logging is unavailable.
       }
+      throw error
+    }
 
-      config.agent.debate = {
-        description: "Coordinates visible debates using participant subagents with self-contained per-round context",
-        mode: "primary",
-        prompt: buildCoordinatorPrompt(generatorCommand),
-        hidden: true,
-        permission: coordinatorPermission(generatorCommand, input.directory, input.worktree),
-      } as any
+    const debateHooks = await createDebatePlugin(registry)(input, options)
+    const generatorCommand = htmlGeneratorCommand()
 
-      for (const participant of DEBATE_PARTICIPANTS) {
-        config.agent[participant.agent] = {
-          description: participant.description,
-          mode: "subagent",
-          model: participant.model,
-          variant: participant.variant,
-          prompt: PARTICIPANT_PROMPT,
-          permission: PARTICIPANT_PERMISSION,
+    return {
+      ...debateHooks,
+      config: async (config) => {
+        if (!config.agent) config.agent = {}
+        if (!config.command) config.command = {}
+
+        config.command.debate = {
+          template: "$ARGUMENTS",
+          description: "Run a visible resumable-subagent debate",
+          agent: "debate",
+        }
+
+        config.agent.debate = {
+          description: "Coordinates visible debates using participant subagents with self-contained per-round context",
+          mode: "primary",
+          prompt: buildCoordinatorPrompt(generatorCommand),
+          hidden: true,
+          permission: coordinatorPermission(generatorCommand, input.directory, input.worktree, registry.participants),
         } as any
-      }
-    },
+
+        for (const participant of registry.participants) {
+          config.agent[participant.agent] = {
+            description: participant.description,
+            mode: "subagent",
+            model: participant.model,
+            prompt: PARTICIPANT_PROMPT,
+            permission: PARTICIPANT_PERMISSION,
+            ...(participant.variant === undefined ? {} : { variant: participant.variant }),
+          } as any
+        }
+      },
+    }
   }
 }
+
+export const server: Plugin = createServer()
 
 const plugin: PluginModule = {
   id: "opencode-debate",
