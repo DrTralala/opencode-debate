@@ -1,5 +1,5 @@
 ---
-description: Neutral debate participant using GLM-5.2 from OpenCode Go
+description: Neutral debate participant using GLM-5.2 from OpenCode Go (max)
 mode: subagent
 hidden: true
 model: opencode-go/glm-5.2

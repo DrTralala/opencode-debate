@@ -28,7 +28,7 @@ test("anthropic participant uses Claude Opus 5 through OpenRouter", () => {
 
   assert.deepEqual(participant, {
     agent: "debate-anthropic",
-    description: "Neutral debate participant using Claude Opus 5 through OpenRouter",
+    description: "Neutral debate participant using Claude Opus 5 through OpenRouter (high)",
     model: "openrouter/anthropic/claude-opus-5",
     variant: "high",
   })

@@ -1,5 +1,5 @@
 ---
-description: Neutral debate participant using Kimi K3 from OpenCode Go
+description: Neutral debate participant using Kimi K3 from OpenCode Go (max)
 mode: subagent
 hidden: true
 model: opencode-go/kimi-k3

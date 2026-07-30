@@ -1,5 +1,5 @@
 ---
-description: Neutral debate participant using Qwen 3.7 Max from OpenCode Go
+description: Neutral debate participant using Qwen 3.7 Max from OpenCode Go (max)
 mode: subagent
 hidden: true
 model: opencode-go/qwen3.7-max
