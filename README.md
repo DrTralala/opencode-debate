@@ -103,8 +103,8 @@ Invalid options produce an error without starting participant subagents.
 
 | Set | Participant 1 | Participant 2 | Participant 3 |
 |---|---|---|---|
-| `default` | `debate-kimi` (Kimi K3) | `debate-anthropic` (Claude Opus 5) | `debate-openai` (GPT-5.6 Sol, `xhigh`) |
-| `cheap` | `debate-glm` (GLM-5.2) | `debate-qwen` (Qwen 3.7 Max) | `debate-kimi` (Kimi K3) |
+| `default` | `debate-kimi` (Kimi K3, `max`) | `debate-anthropic` (Claude Opus 5, `high`) | `debate-openai` (GPT-5.6 Sol, `xhigh`) |
+| `cheap` | `debate-glm` (GLM-5.2, `max`) | `debate-qwen` (Qwen 3.7 Max, `max`) | `debate-kimi` (Kimi K3, `max`) |
 
 ## Configuration
 
