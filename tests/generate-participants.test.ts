@@ -52,7 +52,8 @@ test("renderParticipantAgent combines participant metadata with the shared body"
   for (const tool of ["grep", "glob", "lsp", "webfetch", "websearch"]) {
     assert.match(rendered, new RegExp(`  ${tool}: allow`))
   }
-  for (const tool of ["external_directory", "bash", "edit", "question", "task", "skill"]) {
+  assert.match(rendered, /  bash: ask/)
+  for (const tool of ["external_directory", "edit", "question", "task", "skill"]) {
     assert.match(rendered, new RegExp(`  ${tool}: deny`))
   }
   assert.doesNotMatch(rendered, /"find \*"|"echo \*"|"cat \*"|git (show|diff|log)/)

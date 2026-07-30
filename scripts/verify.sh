@@ -180,7 +180,7 @@ assert_contains ".opencode/agents/debate.md" "debate-qwen"
 assert_not_contains ".opencode/agents/debate.md" "bash: allow"
 
 # Participant agents: mode, model+variant present (canonical source), hardened
-# permissions, read-only body. Model IDs are intentionally not hard-coded here.
+# permissions, non-editing body. Model IDs are intentionally not hard-coded here.
 for agent in debate-openai debate-glm debate-kimi debate-anthropic debate-qwen; do
   assert_contains ".opencode/agents/$agent.md" "mode: subagent"
   assert_contains ".opencode/agents/$agent.md" "hidden: true"
@@ -197,7 +197,7 @@ for agent in debate-openai debate-glm debate-kimi debate-anthropic debate-qwen; 
   assert_contains ".opencode/agents/$agent.md" "webfetch: allow"
   assert_contains ".opencode/agents/$agent.md" "websearch: allow"
   assert_contains ".opencode/agents/$agent.md" "external_directory: deny"
-  assert_contains ".opencode/agents/$agent.md" "bash: deny"
+  assert_contains ".opencode/agents/$agent.md" "bash: ask"
   assert_contains ".opencode/agents/$agent.md" "edit: deny"
   assert_contains ".opencode/agents/$agent.md" "task: deny"
   assert_contains ".opencode/agents/$agent.md" "question: deny"
@@ -206,7 +206,7 @@ for agent in debate-openai debate-glm debate-kimi debate-anthropic debate-qwen; 
   assert_not_contains ".opencode/agents/$agent.md" '"echo *"'
   assert_not_contains ".opencode/agents/$agent.md" '"cat *"'
   assert_not_contains ".opencode/agents/$agent.md" '"git '
-  assert_contains ".opencode/agents/$agent.md" "do not access external directories, use a shell"
+  assert_contains ".opencode/agents/$agent.md" "shell commands remain subject to OpenCode permission approval"
   assert_contains ".opencode/agents/$agent.md" 'Do not set `recommend_stopping: true` merely because the round limit has been reached.'
 done
 

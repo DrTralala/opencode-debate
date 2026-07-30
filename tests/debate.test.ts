@@ -353,7 +353,7 @@ test("runtime registration uses every effective participant and omits absent var
   assert.ok(configHook)
   const config: any = {
     permission: {
-      bash: "ask",
+      bash: "allow",
       task: {
         one: "allow",
         "*": "allow",
@@ -391,7 +391,7 @@ test("runtime registration uses every effective participant and omits absent var
   assert.equal(config.agent.one.model, "provider/one")
   assert.equal(Object.hasOwn(config.agent.one, "variant"), false)
   assert.deepEqual(config.permission, {
-    bash: "ask",
+    bash: "allow",
     task: {
       "*": "allow",
       general: "ask",
@@ -428,6 +428,7 @@ test("runtime registration uses every effective participant and omits absent var
   })
   for (const name of ["one", "two", "three", "four", "five", "six"]) {
     assert.equal(config.agent[name].hidden, true)
+    assert.equal(config.agent[name].permission.bash, "ask")
     assert.equal(config.agent[name].permission.task, "deny")
   }
   assert.deepEqual(config.agent.debate.permission.task, {
@@ -488,9 +489,9 @@ test("a logging failure does not mask the configuration failure", async () => {
   )
 })
 
-test("participant permissions are deny-by-default without shell or external access", () => {
+test("participant permissions require shell approval and deny external access", () => {
   assert.equal(PARTICIPANT_PERMISSION["*"], "deny")
-  assert.equal(PARTICIPANT_PERMISSION.bash, "deny")
+  assert.equal(PARTICIPANT_PERMISSION.bash, "ask")
   assert.equal(PARTICIPANT_PERMISSION.external_directory, "deny")
   assert.deepEqual(PARTICIPANT_PERMISSION.read, {
     "*": "allow",

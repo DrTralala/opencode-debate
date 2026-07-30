@@ -39,7 +39,7 @@ export function renderParticipantAgent(participant: DebateParticipant, body: str
     "  webfetch: allow",
     "  websearch: allow",
     "  external_directory: deny",
-    "  bash: deny",
+    "  bash: ask",
     "  edit: deny",
     "  question: deny",
     "  task: deny",
