@@ -50,6 +50,7 @@ Participants:
 - Start each participant with `task` during round 1 using the participant's assigned `subagent_type`, and record the returned `task_id`.
 - On later rounds, call `task` again with the participant's previous `task_id` and the same `subagent_type`. The subagent retains the topic and all prior rounds from its resumed context; round 2+ prompts only send the other participants' most recent turns.
 - If a participant task fails, times out, or returns empty output, retry that participant once with the same prompt. If it fails again, stop the debate and produce a final synthesis that clearly reports the failed participant and any completed turns.
+- Formatting failures are not participant task failures; do not apply the one-retry-and-abort rule to formatter validation.
 
 State to maintain in your current conversation context:
 
@@ -62,6 +63,7 @@ State to maintain in your current conversation context:
 - per-participant JSON bundles of the other two participants' most recent turns for round 2 and later
 - consensus_reached and recommend_stopping values from round 2 and later
 - any JSON parsing problems per participant per round
+- the request topic token, retained unchanged for transcript persistence
 
 Round 1 flow:
 
@@ -124,29 +126,38 @@ Return only this JSON object:
 {"turn": "<your refined debate turn>", "consensus_reached": <true|false>, "recommend_stopping": <true|false>}
 ```
 
+Response formatting and correction:
+
+- After every participant response, before storing or forwarding it, call the `format_debate_response` custom tool with the raw response. Use schema `round1` for round 1 and `round2` for later rounds.
+- Use only the canonical JSON returned by the formatter. Do not store, forward, or interpret a raw participant response before formatting succeeds.
+- If the formatter reports a syntax error, the coordinator may make a syntax-preserving repair only; the repair must preserve the participant's field values and statuses.
+- For semantic/schema errors, send the exact diagnostic to the resumed participant with its existing `task_id` and `subagent_type`; do not change the participant's content or infer a field or status. Repeat until formatting is successful.
+- Record each failed formatting attempt under `## JSON Parsing Problems`, including the participant, round, and exact diagnostic.
+- Never infer a missing status, default a status to `false`, or manufacture a status after a formatter failure. Use only statuses returned by a successful `round2` formatter call.
+
 Early stop rule:
 
 - Do not evaluate stopping after round 1.
-- For each participant's output: strip any markdown code fence, then extract the substring from the first `{` to the last `}` and parse that as JSON. Extract `turn`, `consensus_reached`, and `recommend_stopping`.
-- If JSON parsing fails or a status field is missing after extraction, retry that participant once with a strict prompt that says: return only the JSON object, no prose, no code fence. If the retry also fails, treat both statuses for that participant as `false`, record the parsing problem in state, and continue until the round limit.
-- After round 2 or later, stop early only if all participants' latest `consensus_reached` and `recommend_stopping` are both `true`.
-- If any participant has `false` for either status, continue until `effective_max_rounds` is reached.
+- After round 2 or later, stop early only if all participants' latest `consensus_reached` and `recommend_stopping` values are both `true`.
+- Treat three false `consensus_reached` values as guidance, not a hard trigger. Do not force a stop or extension from a status count; use the continuation mode and the participants' latest guidance.
 
 Extension decision:
 
-- After `effective_max_rounds` is reached, if early stop did not trigger and at least one participant's latest `recommend_stopping` is `false`, use the Question tool before final synthesis.
+- The parsed request always contains `Continuation mode: ask` or `Continuation mode: discretion`; follow that value exactly.
+- In `ask` mode, use the current Question flow: after `effective_max_rounds` is reached, if early stop did not trigger and at least one participant's latest `recommend_stopping` is `false`, use the Question tool before final synthesis.
 - Ask: "The debate reached the configured round limit. At least one participant recommends continuing. How many additional rounds should we run?"
 - Provide exactly these options: `1 more round`, `3 more rounds`, and `Stop and synthesise now`.
 - If the user selects `1 more round`, increment `effective_max_rounds` by 1 and run one additional round using the round 2+ flow.
 - If the user selects `3 more rounds`, increment `effective_max_rounds` by 3 and run up to three additional rounds using the round 2+ flow.
 - If the user selects `Stop and synthesise now`, proceed to final synthesis.
 - If the user enters a custom numeric value, increment `effective_max_rounds` by that value and run that many additional rounds. If the custom value is non-numeric, proceed to final synthesis.
-- After any extension, re-apply the early stop rule after each completed round. When the new `effective_max_rounds` is reached, re-apply this Extension decision rule.
-- When asking after multiple extensions, include the total number of extensions already granted in the question text as a soft informational note; do not enforce a hard extension cap.
+- In `discretion` mode, choose among Question, one autonomous extra round, or synthesis. Make that choice after the configured limit using the participant guidance and the quality of the accumulated debate.
+- If choosing one autonomous extra round, increment `effective_max_rounds` by 1 and run exactly one additional round using the round 2+ flow. If choosing Question, use the current Question flow; if choosing synthesis, proceed to final synthesis.
+- Re-evaluate after each extension and after every completed round. When a new `effective_max_rounds` is reached, apply the mode-specific decision again. Include the total number of extensions already granted as a soft informational note when asking; there is no hard extension cap.
 
 Final synthesis:
 
-- After early stop, after the user chooses to stop, or after all participants recommend stopping at `effective_max_rounds`, print `## Final Synthesis`.
+- After early stop, after the user chooses to stop, after a discretionary synthesis choice, or after all participants recommend stopping at `effective_max_rounds`, print `## Final Synthesis`.
 - Build the synthesis only from the subagent outputs and the original topic. Do not run additional research, read files, or use tools to gather new information during synthesis.
 - Include key points of agreement.
 - Include key disagreements, if any.
@@ -158,6 +169,7 @@ Final synthesis:
 Transcript persistence:
 
 - After producing the final synthesis, get the timestamp by running exactly `date -u +%Y-%m-%dT%H-%M-%SZ`, then write the canonical Markdown transcript to `docs/debates/<timestamp>-<slug>.md`, where `<slug>` is a short kebab-case slug derived from the topic.
+- Retain the request topic token and use the same token in the matching multiline topic markers below; copy the topic text between those markers verbatim.
 - Use the `write` or `edit` tool to create the Markdown file directly. These tools create missing parent directories, so do not run a separate directory-creation command.
 - Write only canonical Markdown. Do not author, edit, or repair HTML directly.
 - Use exactly this transcript structure. Repeat the participant blocks for every round, omit status bullets in round 1, and begin every participant block in round 2 and later with both lowercase boolean status bullets:
@@ -166,7 +178,9 @@ Transcript persistence:
 # Debate: <title>
 
 **Date:** <timestamp>
-**Topic:** <topic copied verbatim>
+**Topic:** <!-- BEGIN TOPIC <token> -->
+<topic copied verbatim>
+<!-- END TOPIC <token> -->
 **Maximum rounds:** <configured maximum rounds>
 **Rounds completed:** <actual rounds completed>
 **Participants:** Participant 1 (<resolved agent>), Participant 2 (<resolved agent>), Participant 3 (<resolved agent>)

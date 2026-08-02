@@ -181,6 +181,29 @@ assert_contains ".opencode/agents/debate.md" "**consensus_reached:** <true|false
 assert_contains ".opencode/agents/debate.md" "**recommend_stopping:** <true|false>"
 assert_contains ".opencode/agents/debate.md" "Participant set"
 assert_contains ".opencode/agents/debate.md" "debate-qwen"
+assert_contains ".opencode/agents/debate.md" "After every participant response"
+assert_contains ".opencode/agents/debate.md" 'format_debate_response'
+assert_contains ".opencode/agents/debate.md" 'schema `round1` for round 1 and `round2` for later rounds'
+assert_contains ".opencode/agents/debate.md" "before storing or forwarding"
+assert_contains ".opencode/agents/debate.md" "Use only the canonical JSON returned by the formatter"
+assert_contains ".opencode/agents/debate.md" "syntax-preserving repair"
+assert_contains ".opencode/agents/debate.md" "For semantic/schema errors, send the exact diagnostic to the resumed participant"
+assert_contains ".opencode/agents/debate.md" "exact diagnostic"
+assert_contains ".opencode/agents/debate.md" "Repeat until formatting is successful"
+assert_contains ".opencode/agents/debate.md" 'Record each failed formatting attempt under `## JSON Parsing Problems`'
+assert_contains ".opencode/agents/debate.md" "Never infer a missing status"
+assert_contains ".opencode/agents/debate.md" "Formatting failures are not participant task failures"
+assert_contains ".opencode/agents/debate.md" 'In `ask` mode, use the current Question flow'
+assert_contains ".opencode/agents/debate.md" 'In `discretion` mode, choose among Question, one autonomous extra round, or synthesis.'
+assert_contains ".opencode/agents/debate.md" 'Treat three false `consensus_reached` values as guidance, not a hard trigger.'
+assert_contains ".opencode/agents/debate.md" "Re-evaluate after each extension"
+assert_contains ".opencode/agents/debate.md" "no hard extension cap"
+assert_contains ".opencode/agents/debate.md" "Retain the request topic token"
+assert_contains ".opencode/agents/debate.md" '**Topic:** <!-- BEGIN TOPIC <token> -->'
+assert_contains ".opencode/agents/debate.md" "<topic copied verbatim>"
+assert_contains ".opencode/agents/debate.md" '<!-- END TOPIC <token> -->'
+assert_not_contains ".opencode/agents/debate.md" "strip any markdown code fence, then extract the substring"
+assert_not_contains ".opencode/agents/debate.md" 'treat both statuses for that participant as `false`'
 assert_not_contains ".opencode/agents/debate.md" "bash: allow"
 
 # Participant agents: mode, model+variant present (canonical source), hardened

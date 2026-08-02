@@ -355,6 +355,47 @@ test("static and project-local coordinator prompts are identical", () => {
   assert.equal(COORDINATOR_PROMPT, markdownBody(source))
 })
 
+test("coordinator formats every participant response before storing or forwarding it", () => {
+  assert.match(COORDINATOR_PROMPT, /after every participant response/i)
+  assert.match(COORDINATOR_PROMPT, /`format_debate_response`/)
+  assert.match(COORDINATOR_PROMPT, /schema `round1` for round 1 and `round2` for later rounds/)
+  assert.match(COORDINATOR_PROMPT, /before storing or forwarding/)
+  assert.match(COORDINATOR_PROMPT, /Use only the canonical JSON returned by the formatter/)
+})
+
+test("coordinator uses syntax-only repairs and exact diagnostics until formatting succeeds", () => {
+  assert.match(COORDINATOR_PROMPT, /syntax-preserving repair/i)
+  assert.match(COORDINATOR_PROMPT, /semantic\/schema errors.*exact diagnostic.*resumed participant/i)
+  assert.match(COORDINATOR_PROMPT, /exact diagnostic/i)
+  assert.match(COORDINATOR_PROMPT, /repeat until .*successful/i)
+  assert.match(COORDINATOR_PROMPT, /record .*failed .* under `## JSON Parsing Problems`/i)
+  assert.match(COORDINATOR_PROMPT, /Never infer .*status/i)
+  assert.doesNotMatch(COORDINATOR_PROMPT, /strip any markdown code fence, then extract the substring/)
+  assert.doesNotMatch(COORDINATOR_PROMPT, /treat both statuses for that participant as `false`/)
+})
+
+test("coordinator preserves task failure retry and abort handling separately from formatting", () => {
+  assert.match(COORDINATOR_PROMPT, /If a participant task fails, times out, or returns empty output, retry that participant once/)
+  assert.match(COORDINATOR_PROMPT, /If it fails again, stop the debate and produce a final synthesis/)
+  assert.match(COORDINATOR_PROMPT, /Formatting failures are not participant task failures/)
+})
+
+test("coordinator applies ask and discretion continuation modes without a hard cap", () => {
+  assert.match(COORDINATOR_PROMPT, /`ask` mode.*Question tool/s)
+  assert.match(COORDINATOR_PROMPT, /`discretion` mode/s)
+  assert.match(COORDINATOR_PROMPT, /Question, one autonomous extra round, or synthesis/s)
+  assert.match(COORDINATOR_PROMPT, /three false `consensus_reached` values.*guidance, not a hard trigger/s)
+  assert.match(COORDINATOR_PROMPT, /re-evaluate after each extension/is)
+  assert.match(COORDINATOR_PROMPT, /no hard extension cap/s)
+})
+
+test("coordinator retains the request topic token in the multiline transcript topic block", () => {
+  assert.match(COORDINATOR_PROMPT, /retain the request topic token/is)
+  assert.match(COORDINATOR_PROMPT, /\*\*Topic:\*\* <!-- BEGIN TOPIC <token> -->/)
+  assert.match(COORDINATOR_PROMPT, /<topic copied verbatim>/)
+  assert.match(COORDINATOR_PROMPT, /<!-- END TOPIC <token> -->/)
+})
+
 test("installed generator command is safely quoted and substituted exactly", () => {
   const command = htmlGeneratorCommand("file:///tmp/plugin%20dir/index.ts")
   assert.equal(command, "python3 '/tmp/plugin dir/scripts/generate_html.py' --latest")
