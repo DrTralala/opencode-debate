@@ -21,7 +21,7 @@ def formatter_module():
 
 
 class FormatResponseTests(unittest.TestCase):
-    def test_round_one_extracts_fenced_json_from_surrounding_prose(self) -> None:
+    def test_round_one_uses_default_json_unicode_escaping(self) -> None:
         raw = (
             "I considered the question first.\n"
             "```json\n"
@@ -34,7 +34,7 @@ class FormatResponseTests(unittest.TestCase):
 
         self.assertEqual(
             formatted,
-            '{"turn": "First line\\nQuote: \\"yes\\" \\\\ path — café"}',
+            '{"turn": "First line\\nQuote: \\"yes\\" \\\\ path \\u2014 caf\\u00e9"}',
         )
 
     def test_later_round_requires_and_preserves_both_statuses(self) -> None:

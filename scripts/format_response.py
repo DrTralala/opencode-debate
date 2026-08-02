@@ -76,7 +76,7 @@ def format_response(raw: str, schema: str) -> str:
     response = _parse_json(raw)
     _validate_fields(response, schema)
     _validate_values(response, schema)
-    return json.dumps(response, ensure_ascii=False)
+    return json.dumps(response)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
