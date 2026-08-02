@@ -24,6 +24,29 @@ const TEST_REGISTRY: DebateRegistry = {
   defaultSet: "default",
 }
 
+function finalMatchingAction(
+  permission: Record<string, string>,
+  toolName: string,
+): string | undefined {
+  let action: string | undefined
+  for (const [pattern, candidate] of Object.entries(permission)) {
+    if (pattern === "*" || pattern === toolName) action = candidate
+  }
+  return action
+}
+
+async function applyRuntimeConfig(config: any): Promise<any> {
+  const hooks = await createServer(() => TEST_REGISTRY)({
+    client: { app: { log: async () => ({ data: true }) } },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  } as never)
+  const configHook = hooks.config
+  assert.ok(configHook)
+  await configHook(config)
+  return config
+}
+
 test("formatter script resolves relative to the installed package module", () => {
   assert.equal(
     responseFormatterScriptPath("file:///opt/opencode-debate/src/response-formatter.ts"),
@@ -158,4 +181,45 @@ test("runtime permissions allow only the debate coordinator to format responses"
   for (const participant of TEST_REGISTRY.participants) {
     assert.equal(config.agent[participant.agent].permission[FORMAT_DEBATE_RESPONSE_TOOL], "deny")
   }
+})
+
+test("global formatter denial is the final matching permission after a wildcard allow", async () => {
+  const config = await applyRuntimeConfig({
+    permission: {
+      [FORMAT_DEBATE_RESPONSE_TOOL]: "allow",
+      "*": "allow",
+    },
+  })
+
+  assert.equal(
+    finalMatchingAction(config.permission, FORMAT_DEBATE_RESPONSE_TOOL),
+    "deny",
+  )
+})
+
+test("non-coordinator formatter denial is the final matching permission after a wildcard allow", async () => {
+  const config = await applyRuntimeConfig({
+    agent: {
+      build: {
+        permission: {
+          [FORMAT_DEBATE_RESPONSE_TOOL]: "allow",
+          "*": "allow",
+        },
+      },
+    },
+  })
+
+  assert.equal(
+    finalMatchingAction(config.agent.build.permission, FORMAT_DEBATE_RESPONSE_TOOL),
+    "deny",
+  )
+})
+
+test("coordinator formatter allow remains the final matching permission", async () => {
+  const config = await applyRuntimeConfig({})
+
+  assert.equal(
+    finalMatchingAction(config.agent.debate.permission, FORMAT_DEBATE_RESPONSE_TOOL),
+    "allow",
+  )
 })

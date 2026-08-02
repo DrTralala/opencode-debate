@@ -71,10 +71,10 @@ function withResponseFormatterPermission(
     : permission === undefined
       ? {}
       : { "*": permission }
-  return {
-    ...normalised,
-    [FORMAT_DEBATE_RESPONSE_TOOL]: action,
-  }
+  return Object.fromEntries([
+    ...Object.entries(normalised).filter(([key]) => key !== FORMAT_DEBATE_RESPONSE_TOOL),
+    [FORMAT_DEBATE_RESPONSE_TOOL, action],
+  ])
 }
 
 function configureResponseFormatterPermissions(config: Config): void {
