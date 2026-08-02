@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v2.1.0](https://img.shields.io/badge/version-v2.1.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.1.0)
+[![Version: v2.2.0](https://img.shields.io/badge/version-v2.2.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.2.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -39,7 +39,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@2.1.0"
+    "opencode-debate@2.2.0"
   ]
 }
 ```
@@ -75,7 +75,7 @@ Restart OpenCode after changing plugin or agent files.
 2. The plugin parses leading options, validates the request, and resolves the ordered participant set.
 3. Three neutral participant subagents answer the topic independently in round 1.
 4. In later rounds, each participant resumes its session, receives the other participants' latest turns, and refines its position.
-5. From round 2 onward, the debate stops early only when every participant reports consensus and recommends stopping. If the round limit is reached first, you can extend the debate or request synthesis.
+5. From round 2 onward, the debate stops early only when every participant reports consensus and recommends stopping. At the round limit, the selected set's continuation mode either uses the existing user Question flow (`ask`) or lets the coordinator ask, add one round, or synthesise (`discretion`).
 6. The coordinator returns a final synthesis, writes the canonical Markdown transcript, and invokes the Python generator for matching HTML.
 
 Before storing or forwarding any participant response, the coordinator calls the coordinator-only `format_debate_response` custom tool with the `round1` schema for round 1 and `round2` thereafter. The formatter requires the exact schema, preserves participant field values, and returns canonical JSON. Raw responses are never stored or forwarded. Syntax errors may receive syntax-preserving repairs and are retried until formatting succeeds; semantic or schema errors are sent to the resumed participant with the exact diagnostic and retried until valid. Failed formatting attempts are recorded under `## JSON Parsing Problems` in the transcript. The tool is denied globally and to participant agents, and allowed only for the hidden coordinator.
@@ -182,7 +182,7 @@ The request's token is retained for the matching markers. Do not edit the genera
 sh scripts/verify.sh
 ```
 
-This runs repository contract checks, generated-agent and prompt drift detection, Python HTML-generator tests, Node.js behavioural tests, warning checks, and TypeScript typechecking. The same script runs in GitHub Actions for every push and pull request.
+This runs repository contract checks, generated-agent and prompt drift detection, Python response-formatter and HTML-generator tests, Node.js behavioural tests, warning checks, and TypeScript typechecking. The same script runs in GitHub Actions for every push and pull request.
 
 ## Project Structure
 
