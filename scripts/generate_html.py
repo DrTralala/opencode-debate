@@ -60,6 +60,8 @@ MARKDOWN_HELPER_PATH = Path(__file__).with_name("render_markdown.mjs")
 
 TITLE_RE = re.compile(r"^# Debate: (.+)$")
 METADATA_RE = re.compile(r"^\*\*([^*]+):\*\*\s*(.+)$")
+TOPIC_METADATA_RE = re.compile(r"^\*\*Topic:\*\*\s*(.*)$")
+TOPIC_BLOCK_BEGIN_RE = re.compile(r"^<!-- BEGIN TOPIC (\S+) -->$")
 ROUND_RE = re.compile(r"^## Round ([1-9][0-9]*)$")
 PARTICIPANT_RE = re.compile(r"^### Participant ([1-3]) \(([^)]+)\)$")
 STATUS_RE = re.compile(
@@ -102,6 +104,58 @@ def _parse_participants(
     return tuple(
         (int(number), agent) for number, agent in matches
     )  # type: ignore[return-value]
+
+
+def _parse_metadata(lines: list[str]) -> tuple[dict[str, str], int]:
+    metadata: dict[str, str] = {}
+    index = 1
+    while index < len(lines):
+        topic_match = TOPIC_METADATA_RE.fullmatch(lines[index])
+        if topic_match is not None:
+            inline_value = topic_match.group(1)
+            begin_match = TOPIC_BLOCK_BEGIN_RE.fullmatch(inline_value)
+            topic_start = index + 1
+            if (
+                begin_match is None
+                and not inline_value
+                and topic_start < len(lines)
+            ):
+                begin_match = TOPIC_BLOCK_BEGIN_RE.fullmatch(lines[topic_start])
+                if begin_match is not None:
+                    topic_start += 1
+            if begin_match is not None:
+                end_marker = f"<!-- END TOPIC {begin_match.group(1)} -->"
+                try:
+                    topic_end = lines.index(end_marker, topic_start)
+                except ValueError as error:
+                    raise TranscriptError(
+                        "Topic block is missing its matching end marker"
+                    ) from error
+                metadata["Topic"] = _nonempty(
+                    "\n".join(lines[topic_start:topic_end]), "Topic"
+                )
+                index = topic_end + 1
+            else:
+                topic_lines = [inline_value]
+                index += 1
+                while (
+                    index < len(lines)
+                    and METADATA_RE.fullmatch(lines[index]) is None
+                ):
+                    topic_lines.append(lines[index])
+                    index += 1
+                metadata["Topic"] = _nonempty("\n".join(topic_lines), "Topic")
+        else:
+            match = METADATA_RE.fullmatch(lines[index])
+            if match is not None:
+                metadata[match.group(1)] = match.group(2).strip()
+            index += 1
+        if all(field in metadata for field in REQUIRED_METADATA):
+            return metadata, index
+    for field in REQUIRED_METADATA:
+        if field not in metadata:
+            raise TranscriptError(f"Missing required metadata: {field}")
+    raise AssertionError("unreachable")
 
 
 def _sections(lines: list[str]) -> list[tuple[str, int, int]]:
@@ -207,15 +261,9 @@ def parse_transcript(markdown: str) -> Transcript:
     if title_match is None:
         raise TranscriptError("Transcript must start with '# Debate: <title>'")
 
+    metadata, metadata_end = _parse_metadata(lines)
+    lines = lines[metadata_end:]
     section_list = _sections(lines)
-    metadata: dict[str, str] = {}
-    for line in lines[1 : section_list[0][1]]:
-        match = METADATA_RE.fullmatch(line)
-        if match:
-            metadata[match.group(1)] = match.group(2).strip()
-    for field in REQUIRED_METADATA:
-        if field not in metadata:
-            raise TranscriptError(f"Missing required metadata: {field}")
 
     maximum_rounds = _parse_positive_int(
         metadata["Maximum rounds"], "Maximum rounds"

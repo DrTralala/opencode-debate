@@ -108,6 +108,48 @@ class ParseTranscriptTests(unittest.TestCase):
             transcript.final_synthesis, "Use <safe> output & preserve quotes."
         )
 
+    def test_parses_matching_tokenised_multiline_topic_as_topic_content(self) -> None:
+        tokenised = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            """**Topic:**
+<!-- BEGIN TOPIC abc123 -->
+Compare <alpha> & "beta"
+
+---
+
+## Topic heading
+
+**Maximum rounds:** 99
+Closing topic line.
+<!-- END TOPIC abc123 -->""",
+        )
+
+        transcript = parse_transcript(tokenised)
+
+        self.assertEqual(
+            transcript.topic,
+            'Compare <alpha> & "beta"\n\n---\n\n## Topic heading\n\n'
+            "**Maximum rounds:** 99\nClosing topic line.",
+        )
+
+    def test_preserves_legacy_single_line_topic_metadata(self) -> None:
+        transcript = parse_transcript(VALID_TRANSCRIPT)
+
+        self.assertEqual(transcript.topic, 'Compare <alpha> & "beta"')
+
+    def test_preserves_legacy_inline_multiline_topic_metadata(self) -> None:
+        legacy = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            '**Topic:** Compare <alpha> & "beta"\n\nSecond topic paragraph.',
+        )
+
+        transcript = parse_transcript(legacy)
+
+        self.assertEqual(
+            transcript.topic,
+            'Compare <alpha> & "beta"\n\nSecond topic paragraph.',
+        )
+
     def test_preserves_level_two_headings_inside_turns_and_synthesis(self) -> None:
         heading_rich = VALID_TRANSCRIPT.replace(
             "Anthropic first turn.", "## Verdict\n\nAnthropic first turn."
@@ -171,6 +213,26 @@ class RenderHtmlTests(unittest.TestCase):
     def test_escapes_literal_metadata_locations(self) -> None:
         self.assertIn("Compare &lt;alpha&gt; &amp; &quot;beta&quot;", self.html)
         self.assertNotIn("Compare <alpha>", self.html)
+
+    def test_escapes_tokenised_multiline_topic_and_preserves_pre_wrap(self) -> None:
+        tokenised = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            """**Topic:** <!-- BEGIN TOPIC abc123 -->
+First <unsafe> line & "quoted"
+
+Second line.
+<!-- END TOPIC abc123 -->""",
+        )
+
+        rendered = render_html(parse_transcript(tokenised))
+
+        self.assertIn(
+            "First &lt;unsafe&gt; line &amp; &quot;quoted&quot;\n\nSecond line.",
+            rendered,
+        )
+        self.assertNotIn("First <unsafe>", rendered)
+        self.assertNotIn("BEGIN TOPIC", rendered)
+        self.assertIn("white-space: pre-wrap", rendered)
 
     def test_renders_markdown_for_every_narrative_section(self) -> None:
         markdown_rich = (
