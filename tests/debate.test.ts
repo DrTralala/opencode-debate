@@ -374,6 +374,13 @@ test("coordinator uses syntax-only repairs and exact diagnostics until formattin
   assert.doesNotMatch(COORDINATOR_PROMPT, /treat both statuses for that participant as `false`/)
 })
 
+test("syntax repairs are resubmitted and repeated until canonical formatter output", () => {
+  const syntaxRepairClause = /^- If the formatter reports a syntax error,[^\n]+$/m.exec(COORDINATOR_PROMPT)?.[0]
+  assert.ok(syntaxRepairClause)
+  assert.match(syntaxRepairClause, /resubmit the repaired response to `format_debate_response`/)
+  assert.match(syntaxRepairClause, /repeat syntax-preserving repair attempts until the formatter returns canonical output/)
+})
+
 test("coordinator preserves task failure retry and abort handling separately from formatting", () => {
   assert.match(COORDINATOR_PROMPT, /If a participant task fails, times out, or returns empty output, retry that participant once/)
   assert.match(COORDINATOR_PROMPT, /If it fails again, stop the debate and produce a final synthesis/)

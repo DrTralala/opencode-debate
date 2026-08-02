@@ -130,7 +130,7 @@ Response formatting and correction:
 
 - After every participant response, before storing or forwarding it, call the `format_debate_response` custom tool with the raw response. Use schema `round1` for round 1 and `round2` for later rounds.
 - Use only the canonical JSON returned by the formatter. Do not store, forward, or interpret a raw participant response before formatting succeeds.
-- If the formatter reports a syntax error, the coordinator may make a syntax-preserving repair only; the repair must preserve the participant's field values and statuses.
+- If the formatter reports a syntax error, the coordinator may make a syntax-preserving repair only; the repair must preserve the participant's field values and statuses. After every permitted syntax repair, resubmit the repaired response to `format_debate_response` and repeat syntax-preserving repair attempts until the formatter returns canonical output.
 - For semantic/schema errors, send the exact diagnostic to the resumed participant with its existing `task_id` and `subagent_type`; do not change the participant's content or infer a field or status. Repeat until formatting is successful.
 - Record each failed formatting attempt under `## JSON Parsing Problems`, including the participant, round, and exact diagnostic.
 - Never infer a missing status, default a status to `false`, or manufacture a status after a formatter failure. Use only statuses returned by a successful `round2` formatter call.
