@@ -78,6 +78,8 @@ Restart OpenCode after changing plugin or agent files.
 5. From round 2 onward, the debate stops early only when every participant reports consensus and recommends stopping. If the round limit is reached first, you can extend the debate or request synthesis.
 6. The coordinator returns a final synthesis, writes the canonical Markdown transcript, and invokes the Python generator for matching HTML.
 
+Before storing or forwarding any participant response, the coordinator calls the coordinator-only `format_debate_response` custom tool with the `round1` schema for round 1 and `round2` thereafter. The formatter requires the exact schema, preserves participant field values, and returns canonical JSON. Raw responses are never stored or forwarded. Syntax errors may receive syntax-preserving repairs and are retried until formatting succeeds; semantic or schema errors are sent to the resumed participant with the exact diagnostic and retried until valid. Failed formatting attempts are recorded under `## JSON Parsing Problems` in the transcript. The tool is denied globally and to participant agents, and allowed only for the hidden coordinator.
+
 Participant turns stay in their subagent sessions and transcripts; the main session receives the final synthesis.
 
 ## Usage
@@ -139,6 +141,8 @@ A participant requires a non-empty `model`. `description` and `variant` are opti
 
 Every set is a mapping whose `participants` array contains exactly three distinct declared participant IDs. The optional `default: yes` marker may appear on at most one set, and only the parsed string `yes` is valid. When no marker is present, the first set in YAML source order is selected. No set name is reserved, so a set named `default` is not required. The command's default rounds are 3; `--rounds` remains the override.
 
+Each set may specify `continuation: ask` or `continuation: discretion`; omission defaults to `ask`. In `ask` mode, when the configured limit is reached without the early-stop condition and at least one participant recommends continuing, the coordinator asks the user whether to run `1 more round`, `3 more rounds`, or `Stop and synthesise now`. A custom numeric answer grants that many additional rounds; a non-numeric answer proceeds to synthesis. In `discretion` mode, the coordinator chooses among asking the user, one autonomous extra round, or synthesis using participant guidance and debate quality. The decision is revisited after each extension and there is no hard extension cap. Three false `consensus_reached` values are guidance only; they do not automatically stop or extend a debate.
+
 Duplicate YAML keys, unknown fields, unsupported versions, incomplete participants, malformed sets, and unknown participant references stop plugin initialisation. Errors identify the absolute file and field path; creation and read errors also report the filesystem operation and cause. There is no implicit in-memory fallback.
 
 Normal agents are denied Task access to the configured debate participants; only the hidden debate coordinator receives exact Task allows for them. Hiding removes participant autocomplete visibility, but OpenCode still lets a user invoke an exact participant name manually with `@name`. This is not a security boundary.
@@ -162,6 +166,16 @@ Each completed debate writes:
 
 Markdown is canonical. `scripts/generate_html.py` validates it and atomically generates self-contained HTML. Participant turns, extension decisions, JSON parsing notes, and final synthesis render as sanitized Markdown; Consensus and Stop badges appear below each completed round. The transcript files still require normal local-data protection.
 
+The Markdown topic metadata uses matching tokenised markers so multiline topics are preserved verbatim, including blank lines and Markdown-like content:
+
+```markdown
+**Topic:** <!-- BEGIN TOPIC <token> -->
+<topic copied verbatim, including line breaks>
+<!-- END TOPIC <token> -->
+```
+
+The request's token is retained for the matching markers. Do not edit the generated HTML directly; regenerate it from the canonical Markdown.
+
 ## Verification
 
 ```bash
@@ -182,9 +196,11 @@ This runs repository contract checks, generated-agent and prompt drift detection
 | `.opencode/agents/debate-*.md` | Generated project-local participant definitions |
 | `.opencode/plugin/debate.ts` | Loads the project-local plugin bridge |
 | `src/debate.ts` | Parses options and builds canonical debate requests |
+| `src/response-formatter.ts` | Registers the coordinator-only response-formatting tool and runs the packaged validator |
 | `src/participants.ts` | Creates, loads, validates, and normalises authoritative participant YAML |
 | `scripts/debate-participant-body.md` | Shared participant instructions |
 | `scripts/gen-participants.ts` | Generates participant agent files |
+| `scripts/format_response.py` | Strictly validates and canonicalises participant JSON responses |
 | `scripts/generate_html.py` | Parses Markdown transcripts and atomically generates HTML |
 | `scripts/render_markdown.mjs` | Renders and sanitizes narrative Markdown for HTML transcripts |
 | `scripts/check_package.mjs` | Verifies the exact npm package contents |
