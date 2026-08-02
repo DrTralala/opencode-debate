@@ -392,6 +392,7 @@ test("runtime registration uses every effective participant and omits absent var
   assert.equal(Object.hasOwn(config.agent.one, "variant"), false)
   assert.deepEqual(config.permission, {
     bash: "allow",
+    format_debate_response: "deny",
     task: {
       "*": "allow",
       general: "ask",
@@ -405,6 +406,7 @@ test("runtime registration uses every effective participant and omits absent var
   })
   assert.deepEqual(config.agent.build.permission, {
     edit: "allow",
+    format_debate_response: "deny",
     task: {
       "*": "allow",
       one: "deny",
@@ -417,6 +419,7 @@ test("runtime registration uses every effective participant and omits absent var
   })
   assert.deepEqual(config.agent.reviewer.permission, {
     "*": "allow",
+    format_debate_response: "deny",
     task: {
       one: "deny",
       two: "deny",

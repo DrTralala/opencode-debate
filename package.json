@@ -23,6 +23,7 @@
     "config.yaml",
     "index.ts",
     "src/",
+    "scripts/format_response.py",
     "scripts/generate_html.py",
     "scripts/render_markdown.mjs"
   ],

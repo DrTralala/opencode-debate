@@ -8,6 +8,7 @@ import {
   type DebateParticipant,
   type DebateRegistry,
 } from "./src/participants.ts"
+import { ResponseFormatterPlugin } from "./src/response-formatter.ts"
 
 const COORDINATOR_PROMPT_TEMPLATE = `You are the Debate agent for this project. Your job is to run \`/debate\` discussions inside the current OpenCode session by directly coordinating participant subagents with the \`task\` tool.
 
@@ -368,10 +369,12 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
     }
 
     const debateHooks = await createDebatePlugin(registry)(input, options)
+    const responseFormatterHooks = await ResponseFormatterPlugin(input, options)
     const generatorCommand = htmlGeneratorCommand()
 
     return {
       ...debateHooks,
+      ...responseFormatterHooks,
       config: async (config) => {
         config.permission = denyParticipantTasks(
           config.permission as PermissionConfiguration | undefined,
@@ -413,6 +416,8 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
             ...(participant.variant === undefined ? {} : { variant: participant.variant }),
           } as any
         }
+
+        await responseFormatterHooks.config?.(config)
       },
     }
   }

@@ -67,15 +67,18 @@ assert_tracked "package.json"
 assert_tracked "package-lock.json"
 assert_tracked "tsconfig.json"
 assert_tracked "src/participants.ts"
+assert_tracked "src/response-formatter.ts"
 assert_tracked "scripts/debate-participant-body.md"
 assert_tracked "scripts/gen-participants.ts"
 assert_tracked "scripts/generate_html.py"
+assert_tracked "scripts/format_response.py"
 assert_tracked "scripts/render_markdown.mjs"
 assert_tracked "scripts/check_package.mjs"
 assert_tracked "scripts/verify.sh"
 assert_tracked "README.md"
 assert_tracked "tests/render_markdown.test.mjs"
 assert_tracked "tests/check_package.test.mjs"
+assert_tracked "tests/response-formatter.test.ts"
 assert_tracked "tests/publish_workflow.test.mjs"
 
 # npm publication metadata.
@@ -85,6 +88,7 @@ assert_contains "package.json" '"files": ['
 assert_contains "package.json" '"config.yaml"'
 assert_contains "package.json" '"yaml": "2.9.0"'
 assert_contains "package.json" '"scripts/generate_html.py"'
+assert_contains "package.json" '"scripts/format_response.py"'
 assert_contains "package.json" '"publishConfig": {'
 assert_contains "package.json" '"access": "public"'
 assert_contains "README.md" '"opencode-debate@latest"'

@@ -10,10 +10,12 @@ const expected = [
   "config.yaml",
   "index.ts",
   "package.json",
+  "scripts/format_response.py",
   "scripts/generate_html.py",
   "scripts/render_markdown.mjs",
   "src/debate.ts",
   "src/participants.ts",
+  "src/response-formatter.ts",
 ].sort()
 
 export function assertPackageFiles(paths) {
