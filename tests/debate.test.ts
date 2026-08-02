@@ -403,6 +403,10 @@ test("coordinator continuation status matrix scopes all-recommend-stopping to as
       expected: /In `discretion` mode[^\n]+always make the three-way choice[^\n]+including when all participants recommend stopping but ordinary early stop did not trigger/,
     },
     {
+      state: "discretion asks neutrally when all recommend stopping without consensus",
+      expected: /^- If choosing Question when all participants recommend stopping but ordinary early stop did not trigger, ask: "The debate reached the configured round limit without unanimous consensus\. How many additional rounds should we run\?" Use the same options and response handling, including custom numeric values, as the ask-mode Question flow; otherwise, use the current Question flow\.$/m,
+    },
+    {
       state: "consensus is not unanimous and all recommend stopping in ask mode",
       expected: /In `ask` mode[^\n]+if all participants recommend stopping, proceed to final synthesis/,
     },
@@ -414,6 +418,10 @@ test("coordinator continuation status matrix scopes all-recommend-stopping to as
       state: "at least one participant recommends continuing in ask mode",
       expected: /In `ask` mode[^\n]+at least one participant's latest `recommend_stopping` is `false`, use the Question tool/,
     },
+    {
+      state: "ask mode retains its continuing-recommendation Question wording",
+      expected: /^- Ask: "The debate reached the configured round limit\. At least one participant recommends continuing\. How many additional rounds should we run\?"$/m,
+    },
   ]
 
   for (const { state, expected } of statusMatrix) {
@@ -423,6 +431,9 @@ test("coordinator continuation status matrix scopes all-recommend-stopping to as
     COORDINATOR_PROMPT,
     /after all participants recommend stopping at `effective_max_rounds`/,
   )
+  const neutralQuestionClause = /^- If choosing Question when all participants recommend stopping[^\n]+$/m.exec(COORDINATOR_PROMPT)?.[0]
+  assert.ok(neutralQuestionClause)
+  assert.doesNotMatch(neutralQuestionClause, /recommends continuing/)
 })
 
 test("coordinator retains the request topic token in the multiline transcript topic block", () => {

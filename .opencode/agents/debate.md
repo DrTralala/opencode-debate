@@ -153,7 +153,8 @@ Extension decision:
 - If the user selects `Stop and synthesise now`, proceed to final synthesis.
 - If the user enters a custom numeric value, increment `effective_max_rounds` by that value and run that many additional rounds. If the custom value is non-numeric, proceed to final synthesis.
 - In `discretion` mode, always make the three-way choice among Question, one autonomous extra round, or synthesis at each reached limit using the participant guidance and the quality of the accumulated debate, including when all participants recommend stopping but ordinary early stop did not trigger.
-- If choosing one autonomous extra round, increment `effective_max_rounds` by 1 and run exactly one additional round using the round 2+ flow. If choosing Question, use the current Question flow; if choosing synthesis, proceed to final synthesis.
+- If choosing Question when all participants recommend stopping but ordinary early stop did not trigger, ask: "The debate reached the configured round limit without unanimous consensus. How many additional rounds should we run?" Use the same options and response handling, including custom numeric values, as the ask-mode Question flow; otherwise, use the current Question flow.
+- If choosing one autonomous extra round, increment `effective_max_rounds` by 1 and run exactly one additional round using the round 2+ flow. If choosing synthesis, proceed to final synthesis.
 - Re-evaluate after each extension and after every completed round. When a new `effective_max_rounds` is reached, apply the mode-specific decision again. Include the total number of extensions already granted as a soft informational note when asking; there is no hard extension cap.
 
 Final synthesis:
