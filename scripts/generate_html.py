@@ -62,6 +62,9 @@ TITLE_RE = re.compile(r"^# Debate: (.+)$")
 METADATA_RE = re.compile(r"^\*\*([^*]+):\*\*\s*(.+)$")
 TOPIC_METADATA_RE = re.compile(r"^\*\*Topic:\*\*\s*(.*)$")
 TOPIC_BLOCK_BEGIN_RE = re.compile(r"^<!-- BEGIN TOPIC (\S+) -->$")
+TOPIC_BLOCK_MARKER_INTENT_RE = re.compile(
+    r"^<!--\s*(?:BEGIN|END) TOPIC(?:\s|-->|$)"
+)
 ROUND_RE = re.compile(r"^## Round ([1-9][0-9]*)$")
 PARTICIPANT_RE = re.compile(r"^### Participant ([1-3]) \(([^)]+)\)$")
 STATUS_RE = re.compile(
@@ -106,56 +109,80 @@ def _parse_participants(
     )  # type: ignore[return-value]
 
 
+def _starts_section(lines: list[str], index: int) -> bool:
+    if lines[index] != "---":
+        return False
+    heading = index + 1
+    while heading < len(lines) and not lines[heading].strip():
+        heading += 1
+    return heading < len(lines) and lines[heading].startswith("## ")
+
+
+def _has_topic_block_marker_intent(line: str) -> bool:
+    return TOPIC_BLOCK_MARKER_INTENT_RE.match(line.strip()) is not None
+
+
+def _parse_topic(lines: list[str], index: int, inline_value: str) -> tuple[str, int]:
+    begin_match = TOPIC_BLOCK_BEGIN_RE.fullmatch(inline_value)
+    topic_start = index + 1
+    if begin_match is None and not inline_value:
+        marker_index = topic_start
+        while marker_index < len(lines) and not lines[marker_index].strip():
+            marker_index += 1
+        if marker_index < len(lines):
+            begin_match = TOPIC_BLOCK_BEGIN_RE.fullmatch(lines[marker_index])
+            if begin_match is not None:
+                topic_start = marker_index + 1
+
+    if begin_match is not None:
+        end_marker = f"<!-- END TOPIC {begin_match.group(1)} -->"
+        topic_end = topic_start
+        while topic_end < len(lines):
+            if lines[topic_end] == end_marker:
+                topic = "\n".join(lines[topic_start:topic_end])
+                if not topic.strip():
+                    raise TranscriptError("Topic must not be empty")
+                return topic, topic_end + 1
+            if _has_topic_block_marker_intent(lines[topic_end]):
+                raise TranscriptError(
+                    "Topic block contains a malformed or mismatched marker"
+                )
+            topic_end += 1
+        raise TranscriptError("Topic block is missing its matching end marker")
+
+    if _has_topic_block_marker_intent(inline_value):
+        raise TranscriptError("Topic block begin marker is malformed")
+
+    topic_lines = [inline_value]
+    index += 1
+    while index < len(lines):
+        if _starts_section(lines, index) or METADATA_RE.fullmatch(lines[index]):
+            break
+        if _has_topic_block_marker_intent(lines[index]):
+            raise TranscriptError("Topic block marker has no valid begin marker")
+        topic_lines.append(lines[index])
+        index += 1
+    return _nonempty("\n".join(topic_lines), "Topic"), index
+
+
 def _parse_metadata(lines: list[str]) -> tuple[dict[str, str], int]:
     metadata: dict[str, str] = {}
     index = 1
-    while index < len(lines):
+    while index < len(lines) and not _starts_section(lines, index):
         topic_match = TOPIC_METADATA_RE.fullmatch(lines[index])
         if topic_match is not None:
-            inline_value = topic_match.group(1)
-            begin_match = TOPIC_BLOCK_BEGIN_RE.fullmatch(inline_value)
-            topic_start = index + 1
-            if (
-                begin_match is None
-                and not inline_value
-                and topic_start < len(lines)
-            ):
-                begin_match = TOPIC_BLOCK_BEGIN_RE.fullmatch(lines[topic_start])
-                if begin_match is not None:
-                    topic_start += 1
-            if begin_match is not None:
-                end_marker = f"<!-- END TOPIC {begin_match.group(1)} -->"
-                try:
-                    topic_end = lines.index(end_marker, topic_start)
-                except ValueError as error:
-                    raise TranscriptError(
-                        "Topic block is missing its matching end marker"
-                    ) from error
-                metadata["Topic"] = _nonempty(
-                    "\n".join(lines[topic_start:topic_end]), "Topic"
-                )
-                index = topic_end + 1
-            else:
-                topic_lines = [inline_value]
-                index += 1
-                while (
-                    index < len(lines)
-                    and METADATA_RE.fullmatch(lines[index]) is None
-                ):
-                    topic_lines.append(lines[index])
-                    index += 1
-                metadata["Topic"] = _nonempty("\n".join(topic_lines), "Topic")
-        else:
-            match = METADATA_RE.fullmatch(lines[index])
-            if match is not None:
-                metadata[match.group(1)] = match.group(2).strip()
-            index += 1
-        if all(field in metadata for field in REQUIRED_METADATA):
-            return metadata, index
+            metadata["Topic"], index = _parse_topic(
+                lines, index, topic_match.group(1)
+            )
+            continue
+        match = METADATA_RE.fullmatch(lines[index])
+        if match is not None:
+            metadata[match.group(1)] = match.group(2).strip()
+        index += 1
     for field in REQUIRED_METADATA:
         if field not in metadata:
             raise TranscriptError(f"Missing required metadata: {field}")
-    raise AssertionError("unreachable")
+    return metadata, index
 
 
 def _sections(lines: list[str]) -> list[tuple[str, int, int]]:

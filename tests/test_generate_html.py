@@ -132,10 +132,74 @@ Closing topic line.
             "**Maximum rounds:** 99\nClosing topic line.",
         )
 
+    def test_rejects_malformed_inline_topic_block_begin_marker(self) -> None:
+        malformed = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            """**Topic:** <!-- BEGIN TOPIC -->
+**Maximum rounds:** 99
+<!-- END TOPIC -->""",
+        )
+
+        with self.assertRaisesRegex(TranscriptError, "Topic block"):
+            parse_transcript(malformed)
+
+    def test_rejects_mismatched_topic_block_token(self) -> None:
+        mismatched = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            """**Topic:** <!-- BEGIN TOPIC abc123 -->
+Token mismatch.
+<!-- END TOPIC xyz789 -->""",
+        )
+
+        with self.assertRaisesRegex(TranscriptError, "Topic block"):
+            parse_transcript(mismatched)
+
+    def test_recognises_topic_block_after_blank_separator(self) -> None:
+        tokenised = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            """**Topic:**
+
+<!-- BEGIN TOPIC abc123 -->
+Separated marker.
+**Maximum rounds:** 99
+<!-- END TOPIC abc123 -->""",
+        )
+
+        transcript = parse_transcript(tokenised)
+
+        self.assertEqual(
+            transcript.topic, "Separated marker.\n**Maximum rounds:** 99"
+        )
+        self.assertEqual(transcript.maximum_rounds, 3)
+
+    def test_preserves_token_block_boundary_whitespace(self) -> None:
+        tokenised = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            "**Topic:** <!-- BEGIN TOPIC abc123 -->\n\n"
+            "  <alpha>  \n\n"
+            "<!-- END TOPIC abc123 -->",
+        )
+
+        transcript = parse_transcript(tokenised)
+
+        self.assertEqual(transcript.topic, "\n  <alpha>  \n")
+
     def test_preserves_legacy_single_line_topic_metadata(self) -> None:
         transcript = parse_transcript(VALID_TRANSCRIPT)
 
         self.assertEqual(transcript.topic, 'Compare <alpha> & "beta"')
+
+    def test_preserves_legacy_topic_that_mentions_marker_words(self) -> None:
+        legacy = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            "**Topic:** Compare BEGIN TOPIC and END TOPIC delimiters.",
+        )
+
+        transcript = parse_transcript(legacy)
+
+        self.assertEqual(
+            transcript.topic, "Compare BEGIN TOPIC and END TOPIC delimiters."
+        )
 
     def test_preserves_legacy_inline_multiline_topic_metadata(self) -> None:
         legacy = VALID_TRANSCRIPT.replace(
@@ -149,6 +213,22 @@ Closing topic line.
             transcript.topic,
             'Compare <alpha> & "beta"\n\nSecond topic paragraph.',
         )
+
+    def test_topic_last_legacy_multiline_stops_at_section_boundary(self) -> None:
+        topic_last = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"\n', ""
+        ).replace(
+            "**Consensus reached:** No (2/3)",
+            "**Consensus reached:** No (2/3)\n"
+            "**Topic:** Topic last in the preamble.\nSecond topic line.",
+        )
+
+        transcript = parse_transcript(topic_last)
+
+        self.assertEqual(
+            transcript.topic, "Topic last in the preamble.\nSecond topic line."
+        )
+        self.assertEqual(len(transcript.rounds), 2)
 
     def test_preserves_level_two_headings_inside_turns_and_synthesis(self) -> None:
         heading_rich = VALID_TRANSCRIPT.replace(
@@ -166,6 +246,16 @@ Closing topic line.
     def test_rejects_missing_required_metadata(self) -> None:
         with self.assertRaisesRegex(TranscriptError, "Maximum rounds"):
             parse_transcript(VALID_TRANSCRIPT.replace("**Maximum rounds:** 3\n", ""))
+
+    def test_rejects_missing_preamble_metadata_despite_section_lookalike(self) -> None:
+        broken = VALID_TRANSCRIPT.replace("**Maximum rounds:** 3\n", "").replace(
+            "Kimi's first turn.", "**Maximum rounds:** 3\n\nKimi's first turn."
+        )
+
+        with self.assertRaisesRegex(
+            TranscriptError, "Missing required metadata: Maximum rounds"
+        ):
+            parse_transcript(broken)
 
     def test_rejects_non_contiguous_rounds(self) -> None:
         with self.assertRaisesRegex(TranscriptError, "round headings"):
@@ -232,6 +322,21 @@ Second line.
         )
         self.assertNotIn("First <unsafe>", rendered)
         self.assertNotIn("BEGIN TOPIC", rendered)
+        self.assertIn("white-space: pre-wrap", rendered)
+
+    def test_renders_preserved_topic_block_boundary_whitespace(self) -> None:
+        tokenised = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            "**Topic:** <!-- BEGIN TOPIC abc123 -->\n\n"
+            "  <alpha>  \n\n"
+            "<!-- END TOPIC abc123 -->",
+        )
+
+        rendered = render_html(parse_transcript(tokenised))
+
+        self.assertIn(
+            "<strong>Topic:</strong> \n  &lt;alpha&gt;  \n</div>", rendered
+        )
         self.assertIn("white-space: pre-wrap", rendered)
 
     def test_renders_markdown_for_every_narrative_section(self) -> None:
