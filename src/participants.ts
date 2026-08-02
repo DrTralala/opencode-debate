@@ -7,6 +7,7 @@ import { isMap, isScalar, parseDocument } from "yaml"
 
 export type DebateSet = string
 export type DebateParticipantAgent = string
+export type DebateContinuation = "ask" | "discretion"
 
 export type DebateParticipant = Readonly<{
   agent: DebateParticipantAgent
@@ -20,6 +21,7 @@ export type DebateParticipantSets = Readonly<Record<string, readonly string[]>>
 export type DebateRegistry = Readonly<{
   participants: readonly DebateParticipant[]
   sets: DebateParticipantSets
+  continuationBySet?: Readonly<Record<string, DebateContinuation>>
   defaultSet: DebateSet
 }>
 
@@ -32,6 +34,7 @@ export type ParticipantConfigEntry = {
 export type ParticipantSetConfig = {
   participants: [string, string, string]
   default?: "yes"
+  continuation?: DebateContinuation
 }
 
 export type ParticipantConfig = {
@@ -77,7 +80,7 @@ export type ParticipantConfigPaths = {
 
 const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets"])
 const PARTICIPANT_FIELDS = new Set(["description", "model", "variant"])
-const SET_FIELDS = new Set(["participants", "default"])
+const SET_FIELDS = new Set(["participants", "default", "continuation"])
 const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.yaml", import.meta.url))
 
 function isMapping(value: unknown): value is Record<string, unknown> {
@@ -223,6 +226,13 @@ export function parseParticipantConfig(source: string, configPath: string): Part
 
     const parsedSet: ParticipantSetConfig = {
       participants: members as [string, string, string],
+      continuation: "ask",
+    }
+    if (Object.hasOwn(rawSet, "continuation")) {
+      if (rawSet.continuation !== "ask" && rawSet.continuation !== "discretion") {
+        invalid(configPath, `${fieldPath}.continuation`, "expected ask or discretion")
+      }
+      parsedSet.continuation = rawSet.continuation
     }
     if (Object.hasOwn(rawSet, "default")) {
       if (markedDefault !== undefined) {
@@ -259,9 +269,13 @@ function normaliseRegistry(config: ParticipantConfig): DebateRegistry {
   const sets = Object.fromEntries(
     Object.entries(config.sets).map(([name, set]) => [name, Object.freeze([...set.participants])]),
   )
+  const continuationBySet = Object.fromEntries(
+    Object.entries(config.sets).map(([name, set]) => [name, set.continuation ?? "ask"]),
+  )
   return Object.freeze({
     participants: Object.freeze(participants),
     sets: Object.freeze(sets),
+    continuationBySet: Object.freeze(continuationBySet),
     defaultSet: config.defaultSet,
   })
 }

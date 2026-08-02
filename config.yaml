@@ -23,11 +23,13 @@ participants:
 sets:
   default:
     default: yes
+    continuation: ask
     participants:
       - debate-kimi
       - debate-anthropic
       - debate-openai
   cheap:
+    continuation: ask
     participants:
       - debate-glm
       - debate-qwen

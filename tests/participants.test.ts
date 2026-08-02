@@ -90,9 +90,11 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
     sets: {
       default: {
         default: "yes",
+        continuation: "ask",
         participants: ["debate-kimi", "debate-anthropic", "debate-openai"],
       },
       cheap: {
+        continuation: "ask",
         participants: ["debate-glm", "debate-qwen", "debate-kimi"],
       },
     },
@@ -109,6 +111,40 @@ test("packaged compatibility exports are loaded from config.yaml", () => {
 test("description and variant are optional source fields", () => {
   const parsed = parseParticipantConfig(completeConfig(), "/tmp/config.yaml")
   assert.deepEqual(parsed.participants.one, { model: "provider/one" })
+})
+
+test("an omitted continuation mode normalises to ask", () => {
+  const parsed = parseParticipantConfig(completeConfig(), "/tmp/config.yaml")
+
+  assert.equal(parsed.sets.alpha.continuation, "ask")
+})
+
+test("ask and discretion are accepted continuation modes", () => {
+  const parsed = parseParticipantConfig(completeConfig(`
+  alpha:
+    participants: [one, two, three]
+    continuation: ask
+  beta:
+    participants: [one, three, unused]
+    continuation: discretion
+`), "/tmp/config.yaml")
+
+  assert.equal(parsed.sets.alpha.continuation, "ask")
+  assert.equal(parsed.sets.beta.continuation, "discretion")
+})
+
+test("continuation modes reject invalid types and values", () => {
+  for (const value of ["true", "1", "[ask]", "manual", "ASK", "\"\""]) {
+    assertInvalidConfig(
+      completeConfig(`
+  alpha:
+    participants: [one, two, three]
+    continuation: ${value}
+`),
+      "sets.alpha.continuation",
+      /expected ask or discretion/,
+    )
+  }
 })
 
 test("duplicate YAML mapping keys are rejected", () => {
@@ -189,9 +225,9 @@ test("set participant IDs must be non-empty strings", () => {
   )
 })
 
-test("set mappings reject unknown fields and an empty set mapping", () => {
+test("set mappings recognise continuation but reject other unknown fields and an empty set mapping", () => {
   assertInvalidConfig(
-    completeConfig("\n  alpha:\n    participants: [one, two, three]\n    rounds: 4\n"),
+    completeConfig("\n  alpha:\n    participants: [one, two, three]\n    continuation: ask\n    rounds: 4\n"),
     "sets.alpha.rounds",
     /unknown field/i,
   )
@@ -263,6 +299,8 @@ test("unused participants remain in a deeply frozen runtime registry", () => {
     assert.equal(Object.isFrozen(registry.participants[0]), true)
     assert.equal(Object.isFrozen(registry.sets), true)
     assert.equal(Object.isFrozen(registry.sets.alpha), true)
+    assert.deepEqual(registry.continuationBySet, { alpha: "ask" })
+    assert.equal(Object.isFrozen(registry.continuationBySet), true)
   })
 })
 

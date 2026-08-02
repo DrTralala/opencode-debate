@@ -41,6 +41,10 @@ const DYNAMIC_REGISTRY: DebateRegistry = {
     default: ["one", "two", "three"],
     custom: ["four", "five", "six"],
   },
+  continuationBySet: {
+    default: "ask",
+    custom: "discretion",
+  },
   defaultSet: "custom",
 }
 
@@ -267,6 +271,39 @@ test("validPrompt resolves participants from supplied sets", () => {
   assert.match(prompt, /Participant 1: four/)
   assert.match(prompt, /Participant 2: five/)
   assert.match(prompt, /Participant 3: six/)
+})
+
+test("validPrompt defaults an omitted continuation mode to ask", () => {
+  const prompt = validPrompt("my topic", 2, "custom", "abc123", DYNAMIC_REGISTRY.sets)
+
+  assert.match(prompt, /^Continuation mode: ask$/m)
+})
+
+test("validPrompt emits an explicit discretion continuation mode", () => {
+  const prompt = validPrompt(
+    "my topic",
+    2,
+    "custom",
+    "abc123",
+    DYNAMIC_REGISTRY.sets,
+    "discretion",
+  )
+
+  assert.match(prompt, /^Continuation mode: discretion$/m)
+})
+
+test("createDebatePlugin propagates each selected set's continuation mode", async () => {
+  const hooks = await createDebatePlugin(DYNAMIC_REGISTRY)({} as never)
+  const before = hooks["command.execute.before"]
+  assert.ok(before)
+
+  for (const [set, continuation] of [["default", "ask"], ["custom", "discretion"]] as const) {
+    const output: { parts: Part[] } = { parts: [] }
+    await before({ command: "debate", arguments: `--set:${set} my topic` } as never, output)
+
+    assert.equal(output.parts[0]?.type, "text")
+    assert.match(output.parts[0]?.text ?? "", new RegExp(`^Continuation mode: ${continuation}$`, "m"))
+  }
 })
 
 test("createDebatePlugin uses one registry for parsing and prompt resolution", async () => {

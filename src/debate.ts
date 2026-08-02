@@ -3,6 +3,7 @@ import type { Part, TextPart } from "@opencode-ai/sdk"
 import {
   DEBATE_PARTICIPANT_SETS,
   DEBATE_REGISTRY,
+  type DebateContinuation,
   type DebateParticipantSets,
   type DebateRegistry,
   type DebateSet,
@@ -128,6 +129,7 @@ export function validPrompt(
   set: DebateSet,
   token: string = randomDelimiter(),
   sets: DebateParticipantSets = DEBATE_PARTICIPANT_SETS,
+  continuation: DebateContinuation = "ask",
 ): string {
   if (topic === "") {
     return [
@@ -149,6 +151,7 @@ export function validPrompt(
     "",
     `Maximum rounds: ${rounds}`,
     `Participant set: ${set}`,
+    `Continuation mode: ${continuation}`,
     "Resolved participants:",
     ...resolvedParticipants(set, sets),
     "",
@@ -189,7 +192,14 @@ export function createDebatePlugin(registry: DebateRegistry): Plugin {
       replaceParts(
         output,
         parsed.ok
-          ? validPrompt(parsed.topic, parsed.rounds, parsed.set, randomDelimiter(), registry.sets)
+          ? validPrompt(
+              parsed.topic,
+              parsed.rounds,
+              parsed.set,
+              randomDelimiter(),
+              registry.sets,
+              registry.continuationBySet?.[parsed.set],
+            )
           : errorPrompt(parsed.error),
       )
     },
