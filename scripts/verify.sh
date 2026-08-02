@@ -54,6 +54,7 @@ assert_tracked "LICENSE"
 assert_tracked "tests/debate.test.ts"
 assert_present "tests/participants.test.ts"
 assert_tracked "tests/test_generate_html.py"
+assert_tracked "tests/test_format_response.py"
 assert_tracked ".opencode/agents/debate.md"
 assert_tracked ".opencode/agents/debate-openai.md"
 assert_tracked ".opencode/agents/debate-glm.md"
@@ -194,7 +195,7 @@ assert_contains ".opencode/agents/debate.md" 'Record each failed formatting atte
 assert_contains ".opencode/agents/debate.md" "Never infer a missing status"
 assert_contains ".opencode/agents/debate.md" "Formatting failures are not participant task failures"
 assert_contains ".opencode/agents/debate.md" 'In `ask` mode, use the current Question flow'
-assert_contains ".opencode/agents/debate.md" 'In `discretion` mode, choose among Question, one autonomous extra round, or synthesis.'
+assert_contains ".opencode/agents/debate.md" 'In `discretion` mode, always make the three-way choice among Question, one autonomous extra round, or synthesis'
 assert_contains ".opencode/agents/debate.md" 'Treat three false `consensus_reached` values as guidance, not a hard trigger.'
 assert_contains ".opencode/agents/debate.md" "Re-evaluate after each extension"
 assert_contains ".opencode/agents/debate.md" "no hard extension cap"

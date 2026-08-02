@@ -171,6 +171,8 @@ def _parse_metadata(lines: list[str]) -> tuple[dict[str, str], int]:
     while index < len(lines) and not _starts_section(lines, index):
         topic_match = TOPIC_METADATA_RE.fullmatch(lines[index])
         if topic_match is not None:
+            if "Topic" in metadata:
+                raise TranscriptError("Duplicate metadata: Topic")
             metadata["Topic"], index = _parse_topic(
                 lines, index, topic_match.group(1)
             )

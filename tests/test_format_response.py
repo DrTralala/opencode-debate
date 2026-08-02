@@ -61,6 +61,32 @@ class FormatResponseTests(unittest.TestCase):
             '{"turn": "  keep this newline\\nand these spaces  "}',
         )
 
+    def test_duplicate_object_keys_are_rejected(self) -> None:
+        cases = (
+            ('{"turn":"first","turn":"second"}', "round1", "turn"),
+            (
+                '{"turn":"later","consensus_reached":true,'
+                '"consensus_reached":false,"recommend_stopping":true}',
+                "round2",
+                "consensus_reached",
+            ),
+            (
+                '{"turn":"later","consensus_reached":false,'
+                '"recommend_stopping":true,"recommend_stopping":false}',
+                "round2",
+                "recommend_stopping",
+            ),
+        )
+        for raw, schema, field in cases:
+            with self.subTest(field=field):
+                with self.assertRaises(
+                    formatter_module().ResponseFormatError
+                ) as caught:
+                    formatter_module().format_response(raw, schema)
+                self.assertEqual(
+                    str(caught.exception), f"Duplicate JSON object key: {field}"
+                )
+
     def test_malformed_json_reports_line_and_column(self) -> None:
         raw = 'prefix\n{\n  "turn": "missing comma"\n  "other": "value"\n}'
 

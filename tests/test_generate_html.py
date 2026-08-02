@@ -132,6 +132,22 @@ Closing topic line.
             "**Maximum rounds:** 99\nClosing topic line.",
         )
 
+    def test_rejects_duplicate_tokenised_topic_blocks(self) -> None:
+        duplicate = VALID_TRANSCRIPT.replace(
+            '**Topic:** Compare <alpha> & "beta"',
+            """**Topic:** <!-- BEGIN TOPIC first -->
+First topic.
+<!-- END TOPIC first -->
+**Topic:** <!-- BEGIN TOPIC second -->
+Second topic.
+<!-- END TOPIC second -->""",
+        )
+
+        with self.assertRaisesRegex(
+            TranscriptError, r"^Duplicate metadata: Topic$"
+        ):
+            parse_transcript(duplicate)
+
     def test_rejects_malformed_inline_topic_block_begin_marker(self) -> None:
         malformed = VALID_TRANSCRIPT.replace(
             '**Topic:** Compare <alpha> & "beta"',

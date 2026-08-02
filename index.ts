@@ -132,20 +132,21 @@ Early stop rule:
 Extension decision:
 
 - The parsed request always contains \`Continuation mode: ask\` or \`Continuation mode: discretion\`; follow that value exactly.
-- In \`ask\` mode, use the current Question flow: after \`effective_max_rounds\` is reached, if early stop did not trigger and at least one participant's latest \`recommend_stopping\` is \`false\`, use the Question tool before final synthesis.
+- At every reached \`effective_max_rounds\`, apply the ordinary early stop rule before the continuation mode. If early stop did not trigger, apply the mode-specific decision below.
+- In \`ask\` mode, use the current Question flow: if at least one participant's latest \`recommend_stopping\` is \`false\`, use the Question tool before final synthesis; if all participants recommend stopping, proceed to final synthesis.
 - Ask: "The debate reached the configured round limit. At least one participant recommends continuing. How many additional rounds should we run?"
 - Provide exactly these options: \`1 more round\`, \`3 more rounds\`, and \`Stop and synthesise now\`.
 - If the user selects \`1 more round\`, increment \`effective_max_rounds\` by 1 and run one additional round using the round 2+ flow.
 - If the user selects \`3 more rounds\`, increment \`effective_max_rounds\` by 3 and run up to three additional rounds using the round 2+ flow.
 - If the user selects \`Stop and synthesise now\`, proceed to final synthesis.
 - If the user enters a custom numeric value, increment \`effective_max_rounds\` by that value and run that many additional rounds. If the custom value is non-numeric, proceed to final synthesis.
-- In \`discretion\` mode, choose among Question, one autonomous extra round, or synthesis. Make that choice after the configured limit using the participant guidance and the quality of the accumulated debate.
+- In \`discretion\` mode, always make the three-way choice among Question, one autonomous extra round, or synthesis at each reached limit using the participant guidance and the quality of the accumulated debate, including when all participants recommend stopping but ordinary early stop did not trigger.
 - If choosing one autonomous extra round, increment \`effective_max_rounds\` by 1 and run exactly one additional round using the round 2+ flow. If choosing Question, use the current Question flow; if choosing synthesis, proceed to final synthesis.
 - Re-evaluate after each extension and after every completed round. When a new \`effective_max_rounds\` is reached, apply the mode-specific decision again. Include the total number of extensions already granted as a soft informational note when asking; there is no hard extension cap.
 
 Final synthesis:
 
-- After early stop, after the user chooses to stop, after a discretionary synthesis choice, or after all participants recommend stopping at \`effective_max_rounds\`, print \`## Final Synthesis\`.
+- After ordinary early stop, an ask-mode all-recommend-stopping synthesis, the user chooses to stop, or a discretionary synthesis choice, print \`## Final Synthesis\`.
 - Build the synthesis only from the subagent outputs and the original topic. Do not run additional research, read files, or use tools to gather new information during synthesis.
 - Include key points of agreement.
 - Include key disagreements, if any.

@@ -27,10 +27,21 @@ def _extract_json_object(raw: str) -> str:
     return raw[start : end + 1]
 
 
+def _reject_duplicate_object_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ResponseFormatError(f"Duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
 def _parse_json(raw: str) -> dict[str, Any]:
     candidate = _extract_json_object(raw)
     try:
-        value = json.loads(candidate)
+        value = json.loads(candidate, object_pairs_hook=_reject_duplicate_object_keys)
     except json.JSONDecodeError as error:
         raise ResponseFormatError(
             f"Malformed JSON at line {error.lineno}, column {error.colno}: "

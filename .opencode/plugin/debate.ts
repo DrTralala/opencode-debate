@@ -1,2 +1,2 @@
-export * from "../../src/debate.ts"
-export * from "../../src/response-formatter.ts"
+export { DebatePlugin } from "../../src/debate.ts"
+export { ResponseFormatterPlugin } from "../../src/response-formatter.ts"

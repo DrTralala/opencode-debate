@@ -396,6 +396,35 @@ test("coordinator applies ask and discretion continuation modes without a hard c
   assert.match(COORDINATOR_PROMPT, /no hard extension cap/s)
 })
 
+test("coordinator continuation status matrix scopes all-recommend-stopping to ask mode", () => {
+  const statusMatrix = [
+    {
+      state: "consensus is not unanimous and all recommend stopping in discretion mode",
+      expected: /In `discretion` mode[^\n]+always make the three-way choice[^\n]+including when all participants recommend stopping but ordinary early stop did not trigger/,
+    },
+    {
+      state: "consensus is not unanimous and all recommend stopping in ask mode",
+      expected: /In `ask` mode[^\n]+if all participants recommend stopping, proceed to final synthesis/,
+    },
+    {
+      state: "all consensus and stopping statuses are true in either mode",
+      expected: /stop early only if all participants' latest `consensus_reached` and `recommend_stopping` values are both `true`/,
+    },
+    {
+      state: "at least one participant recommends continuing in ask mode",
+      expected: /In `ask` mode[^\n]+at least one participant's latest `recommend_stopping` is `false`, use the Question tool/,
+    },
+  ]
+
+  for (const { state, expected } of statusMatrix) {
+    assert.match(COORDINATOR_PROMPT, expected, state)
+  }
+  assert.doesNotMatch(
+    COORDINATOR_PROMPT,
+    /after all participants recommend stopping at `effective_max_rounds`/,
+  )
+})
+
 test("coordinator retains the request topic token in the multiline transcript topic block", () => {
   assert.match(COORDINATOR_PROMPT, /retain the request topic token/is)
   assert.match(COORDINATOR_PROMPT, /\*\*Topic:\*\* <!-- BEGIN TOPIC <token> -->/)

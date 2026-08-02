@@ -117,12 +117,27 @@ test("response formatter plugin registers an executable custom tool", async () =
   )
 })
 
-test("project-local plugin bridge registers the response formatter tool", () => {
+test("project-local plugin bridge satisfies the OpenCode v1.17.13 file-plugin loader", () => {
   const pluginUrl = new URL("../.opencode/plugin/debate.ts", import.meta.url).href
   const script = [
-    `import { FORMAT_DEBATE_RESPONSE_TOOL, ResponseFormatterPlugin } from ${JSON.stringify(pluginUrl)}`,
-    "const hooks = await ResponseFormatterPlugin({})",
-    "if (!hooks.tool?.[FORMAT_DEBATE_RESPONSE_TOOL]) process.exit(1)",
+    `const bridge = await import(${JSON.stringify(pluginUrl)})`,
+    "const seen = new Set()",
+    "const plugins = []",
+    "for (const entry of Object.values(bridge)) {",
+    "  if (seen.has(entry)) continue",
+    "  seen.add(entry)",
+    "  const plugin = typeof entry === 'function'",
+    "    ? entry",
+    "    : entry && typeof entry === 'object' && typeof entry.server === 'function'",
+    "      ? entry.server",
+    "      : undefined",
+    "  if (!plugin) throw new TypeError('Plugin export is not a function')",
+    "  plugins.push(plugin)",
+    "}",
+    "const hooks = []",
+    "for (const plugin of plugins) hooks.push(await plugin({}))",
+    "if (!hooks.some((candidate) => candidate['command.execute.before'])) process.exit(1)",
+    "if (!hooks.some((candidate) => candidate.tool?.format_debate_response)) process.exit(1)",
   ].join("\n")
   const result = spawnSync(
     process.execPath,
