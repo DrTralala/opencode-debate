@@ -355,6 +355,48 @@ test("static and project-local coordinator prompts are identical", () => {
   assert.equal(COORDINATOR_PROMPT, markdownBody(source))
 })
 
+test("coordinator launches each round as a three-task batch", () => {
+  assert.match(
+    COORDINATOR_PROMPT,
+    /all three participant `task` calls in a single coordinator response/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Do not wait for one participant's task result before issuing the other two calls/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /wait for all three task results before formatting, storing, or forwarding the round/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /all three resumed participant `task` calls.*single coordinator response/s,
+  )
+
+  const round1Section = /^Round 1 flow:\n([\s\S]*?)^Round 1 participant prompt template:/m.exec(COORDINATOR_PROMPT)?.[1]
+  assert.ok(round1Section)
+  assert.match(
+    round1Section,
+    /all three participant `task` calls in a single coordinator response[\s\S]*Do not wait for one participant's task result before issuing the other two calls[\s\S]*wait for all three task results before formatting, storing, or forwarding the round/,
+  )
+
+  const round2Section = /^Round 2\+ flow:\n([\s\S]*?)^Round 2\+ participant prompt template:/m.exec(COORDINATOR_PROMPT)?.[1]
+  assert.ok(round2Section)
+  assert.match(
+    round2Section,
+    /all three resumed participant `task` calls.*single coordinator response[\s\S]*Do not wait for one participant's task result before issuing the other two calls[\s\S]*wait for all three task results before formatting, storing, or forwarding the round/s,
+  )
+})
+
+test("coordinator canonicalises the complete round before advancing", () => {
+  assert.match(
+    COORDINATOR_PROMPT,
+    /next round cannot begin until all three responses.*successfully formatted/s,
+  )
+  assert.match(COORDINATOR_PROMPT, /Use only the canonical JSON returned by the formatter/)
+  assert.match(COORDINATOR_PROMPT, /semantic\/schema errors.*resumed participant.*existing `task_id`/s)
+})
+
 test("coordinator formats every participant response before storing or forwarding it", () => {
   assert.match(COORDINATOR_PROMPT, /after every participant response/i)
   assert.match(COORDINATOR_PROMPT, /`format_debate_response`/)
@@ -372,6 +414,22 @@ test("coordinator uses syntax-only repairs and exact diagnostics until formattin
   assert.match(COORDINATOR_PROMPT, /Never infer .*status/i)
   assert.doesNotMatch(COORDINATOR_PROMPT, /strip any markdown code fence, then extract the substring/)
   assert.doesNotMatch(COORDINATOR_PROMPT, /treat both statuses for that participant as `false`/)
+})
+
+test("coordinator keeps syntax and semantic formatting corrections separate", () => {
+  assert.doesNotMatch(COORDINATOR_PROMPT, /syntax or semantic formatting retry may resume/i)
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Syntax errors remain coordinator-side syntax-preserving repairs; do not resume a participant merely for a syntax error\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /A semantic\/schema formatting retry may resume only the affected participant with its existing `task_id` and `subagent_type`/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Neither a syntax-preserving repair nor a semantic\/schema formatting retry advances the debate or starts a normal next round\./,
+  )
 })
 
 test("syntax repairs are resubmitted and repeated until canonical formatter output", () => {

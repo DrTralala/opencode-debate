@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v2.2.0](https://img.shields.io/badge/version-v2.2.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.2.0)
+[![Version: v2.2.1](https://img.shields.io/badge/version-v2.2.1-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.2.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -39,7 +39,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@2.2.0"
+    "opencode-debate@2.2.1"
   ]
 }
 ```

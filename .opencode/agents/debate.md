@@ -47,8 +47,10 @@ Participants:
 - Use the same three resolved subagent types for every round of a single debate; do not mix sets mid-debate.
 - Participant model IDs and variants are defined in the participant agent frontmatter.
 - Do not assign advocate, critic, pro, con, reviewer, or other asymmetric roles.
-- Start each participant with `task` during round 1 using the participant's assigned `subagent_type`, and record the returned `task_id`.
-- On later rounds, call `task` again with the participant's previous `task_id` and the same `subagent_type`. The subagent retains the topic and all prior rounds from its resumed context; round 2+ prompts only send the other participants' most recent turns.
+- For every round, issue all three participant `task` calls in a single coordinator response as one concurrent batch. Do not wait for one participant's task result before issuing the other two calls.
+- During round 1, start each participant with `task` using the participant's assigned `subagent_type`, and record the returned `task_id`.
+- On later rounds, resume each participant with `task` using its previous `task_id` and the same `subagent_type`.
+- Do not format, store, forward, or interpret any participant response until all three task calls for that round have returned.
 - If a participant task fails, times out, or returns empty output, retry that participant once with the same prompt. If it fails again, stop the debate and produce a final synthesis that clearly reports the failed participant and any completed turns.
 - Formatting failures are not participant task failures; do not apply the one-retry-and-abort rule to formatter validation.
 
@@ -67,7 +69,9 @@ State to maintain in your current conversation context:
 
 Round 1 flow:
 
-- Start `Participant 1`, `Participant 2`, and `Participant 3` with `task` using the `subagent_type` values from the parsed request's `Resolved participants:` list.
+- Issue all three participant `task` calls in a single coordinator response as one concurrent batch: start `Participant 1`, `Participant 2`, and `Participant 3` using the `subagent_type` values from the parsed request's `Resolved participants:` list.
+- Do not wait for one participant's task result before issuing the other two calls.
+- wait for all three task results before formatting, storing, or forwarding the round; only then invoke `format_debate_response` for each response and store canonical turns.
 - Give all participants the same original topic, wrapped in the tokenised topic delimiters shown in the template below (topic text extracted verbatim from the parsed request).
 - Ask each participant to answer independently.
 - Do not ask any participant whether consensus exists.
@@ -98,12 +102,14 @@ Return only this JSON object:
 
 Round 2+ flow:
 
-- Call `task` for each participant with its saved `task_id` and assigned `subagent_type`. The subagent already has the topic and all prior rounds from its resumed context; do not resend them.
-- For each participant, package the other two participants' most recent turns into the JSON bundle shown in the template below. Do not summarise or rewrite their text; pass each `turn_response` verbatim. For round 1 turns, `turn_response` contains only `turn`.
+- Issue all three resumed participant `task` calls in a single coordinator response as one concurrent batch, using each participant's saved `task_id` and assigned `subagent_type`. The subagent already has the topic and all prior rounds from its resumed context; do not resend them.
+- Do not wait for one participant's task result before issuing the other two calls.
+- For each participant, package the other two participants' most recent canonical turns from the completed previous round into the JSON bundle shown in the template below. Do not summarise or rewrite their text; pass each canonical `turn_response` verbatim. For round 1 turns, `turn_response` contains only `turn`.
 - Give each participant a prompt containing only that JSON bundle and the response instructions. Do not repeat the topic, the participant's own previous turn, or any earlier round.
 - Ask each participant to respond to the other participants' reasoning and refine its answer.
 - Ask each participant to return the same JSON format every round after round 1: `turn`, `consensus_reached`, and `recommend_stopping`.
-- Store each returned turn and the per-participant JSON bundles in your state, but do not print participant turns in the main session.
+- wait for all three task results before formatting, storing, or forwarding the round; do not evaluate early stop or extension decisions until all three resumed responses are canonical.
+- Store each returned canonical turn and the per-participant JSON bundles in your state, but do not print participant turns in the main session.
 
 Round 2+ participant prompt template:
 
@@ -132,6 +138,9 @@ Response formatting and correction:
 - Use only the canonical JSON returned by the formatter. Do not store, forward, or interpret a raw participant response before formatting succeeds.
 - If the formatter reports a syntax error, the coordinator may make a syntax-preserving repair only; the repair must preserve the participant's field values and statuses. After every permitted syntax repair, resubmit the repaired response to `format_debate_response` and repeat syntax-preserving repair attempts until the formatter returns canonical output.
 - For semantic/schema errors, send the exact diagnostic to the resumed participant with its existing `task_id` and `subagent_type`; do not change the participant's content or infer a field or status. Repeat until formatting is successful.
+- Syntax errors remain coordinator-side syntax-preserving repairs; do not resume a participant merely for a syntax error.
+- A semantic/schema formatting retry may resume only the affected participant with its existing `task_id` and `subagent_type`; that retry does not advance the debate or start a new round. Neither a syntax-preserving repair nor a semantic/schema formatting retry advances the debate or starts a normal next round.
+- The next round cannot begin until all three responses from the current round have been successfully formatted into canonical JSON; no normal round may start before that barrier.
 - Record each failed formatting attempt under `## JSON Parsing Problems`, including the participant, round, and exact diagnostic.
 - Never infer a missing status, default a status to `false`, or manufacture a status after a formatter failure. Use only statuses returned by a successful `round2` formatter call.
 
