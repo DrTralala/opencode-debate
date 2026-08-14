@@ -12,10 +12,13 @@ const expected = [
   "package.json",
   "scripts/format_response.py",
   "scripts/generate_html.py",
+  "scripts/publish_transcript.py",
   "scripts/render_markdown.mjs",
   "src/debate.ts",
   "src/participants.ts",
   "src/response-formatter.ts",
+  "src/task-dispatch-guard.ts",
+  "src/transcript-persistence.ts",
 ].sort()
 
 export function assertPackageFiles(paths) {

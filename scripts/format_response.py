@@ -27,6 +27,38 @@ def _extract_json_object(raw: str) -> str:
     return raw[start : end + 1]
 
 
+def _escape_control_characters_in_strings(candidate: str) -> str:
+    escaped_controls = {
+        "\b": r"\b",
+        "\f": r"\f",
+        "\n": r"\n",
+        "\r": r"\r",
+        "\t": r"\t",
+    }
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    for character in candidate:
+        if escaped:
+            repaired.append(character)
+            escaped = False
+            continue
+        if character == "\\":
+            repaired.append(character)
+            if in_string:
+                escaped = True
+            continue
+        if character == '"':
+            repaired.append(character)
+            in_string = not in_string
+            continue
+        if in_string and ord(character) <= 0x1F:
+            repaired.append(escaped_controls.get(character, f"\\u{ord(character):04x}"))
+            continue
+        repaired.append(character)
+    return "".join(repaired)
+
+
 def _reject_duplicate_object_keys(
     pairs: list[tuple[str, Any]],
 ) -> dict[str, Any]:
@@ -39,7 +71,7 @@ def _reject_duplicate_object_keys(
 
 
 def _parse_json(raw: str) -> dict[str, Any]:
-    candidate = _extract_json_object(raw)
+    candidate = _escape_control_characters_in_strings(_extract_json_object(raw))
     try:
         value = json.loads(candidate, object_pairs_hook=_reject_duplicate_object_keys)
     except json.JSONDecodeError as error:

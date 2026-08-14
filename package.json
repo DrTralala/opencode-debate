@@ -1,6 +1,6 @@
 {
   "name": "opencode-debate",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Run structured multi-model debates in OpenCode.",
   "license": "MIT",
   "author": "DrTralala <drtralala@outlook.com>",
@@ -23,8 +23,10 @@
     "config.yaml",
     "index.ts",
     "src/",
+    "src/transcript-persistence.ts",
     "scripts/format_response.py",
     "scripts/generate_html.py",
+    "scripts/publish_transcript.py",
     "scripts/render_markdown.mjs"
   ],
   "publishConfig": {

@@ -4,12 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import html
+import errno
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 
 
@@ -179,7 +182,10 @@ def _parse_metadata(lines: list[str]) -> tuple[dict[str, str], int]:
             continue
         match = METADATA_RE.fullmatch(lines[index])
         if match is not None:
-            metadata[match.group(1)] = match.group(2).strip()
+            field = match.group(1)
+            if field == "Date" and field in metadata:
+                raise TranscriptError(f"Duplicate metadata: {field}")
+            metadata[field] = match.group(2).strip()
         index += 1
     for field in REQUIRED_METADATA:
         if field not in metadata:
@@ -282,7 +288,18 @@ def _parse_round(round_number: int, lines: list[str]) -> DebateRound:
     return DebateRound(round_number, tuple(turns))  # type: ignore[arg-type]
 
 
-def parse_transcript(markdown: str) -> Transcript:
+DATE_ONLY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+LEGACY_DATE_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(?::|-)[0-9]{2}(?::|-)[0-9]{2}Z"
+)
+
+
+def parse_transcript(
+    markdown: str,
+    *,
+    date_only: bool = False,
+    expected_date: str | None = None,
+) -> Transcript:
     lines = markdown.splitlines()
     if not lines:
         raise TranscriptError("Transcript is empty")
@@ -343,6 +360,18 @@ def parse_transcript(markdown: str) -> Transcript:
         raise TranscriptError("Rounds completed metadata does not match round sections")
     if final_synthesis is None:
         raise TranscriptError("Missing Final Synthesis section")
+
+    date_pattern = DATE_ONLY_RE if date_only else re.compile(
+        rf"(?:{LEGACY_DATE_RE.pattern}|{DATE_ONLY_RE.pattern}(?!T))"
+    )
+    if date_pattern.fullmatch(metadata["Date"]) is None:
+        raise TranscriptError(
+            "Date must be a UTC YYYY-MM-DD value"
+            if date_only
+            else "Date must be a UTC YYYY-MM-DD value or legacy timestamp"
+        )
+    if expected_date is not None and metadata["Date"] != expected_date:
+        raise TranscriptError(f"Date must equal expected UTC date {expected_date}")
 
     participants = _parse_participants(metadata["Participants"])
     for round_ in rounds:
@@ -568,29 +597,89 @@ def render_html(transcript: Transcript) -> str:
 '''
 
 
-TIMESTAMPED_TRANSCRIPT_RE = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z-.+\.md$"
+LEGACY_TRANSCRIPT_RE = re.compile(
+    r"^(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})T"
+    r"(?P<time>[0-9]{2}-[0-9]{2}-[0-9]{2})Z-(?P<slug>.+)\.md$"
+)
+DATE_ONLY_TRANSCRIPT_RE = re.compile(
+    r"^(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})-(?P<rest>.+)\.md$"
 )
 
 
+def _ensure_trusted_debates_root(cwd: Path) -> Path:
+    absolute_cwd = cwd if cwd.is_absolute() else Path.cwd() / cwd
+    current = Path(absolute_cwd.anchor)
+    for component in absolute_cwd.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            raise TranscriptError("Project directory path components must not be symlinks")
+    if absolute_cwd.is_symlink():
+        raise TranscriptError("Project directory must not be a symlink")
+    root = absolute_cwd / "docs" / "debates"
+    for component in (absolute_cwd / "docs", root):
+        try:
+            if component.is_symlink():
+                raise TranscriptError(
+                    "Transcript directory path components must not be symlinks"
+                )
+        except OSError as error:
+            raise TranscriptError(f"Could not inspect transcript directory: {error}") from error
+    return root.resolve()
+
+
+def _date_only_key(path: Path, names: set[str]) -> tuple[tuple[int, ...], str, int]:
+    match = DATE_ONLY_TRANSCRIPT_RE.fullmatch(path.name)
+    assert match is not None
+    date = tuple(int(value) for value in match.group("date").split("-"))
+    rest = match.group("rest")
+    suffix = 1
+    stem = rest
+    if "-" in rest:
+        prefix, candidate = rest.rsplit("-", 1)
+        if candidate.isdigit() and int(candidate) >= 2:
+            base_name = f"{match.group('date')}-{prefix}.md"
+            if base_name in names:
+                stem = prefix
+                suffix = int(candidate)
+    return date, stem, suffix
+
+
+def _latest_key(path: Path, names: set[str]) -> tuple[tuple[int, ...], tuple[int, ...], int, str, int]:
+    legacy = LEGACY_TRANSCRIPT_RE.fullmatch(path.name)
+    if legacy is not None:
+        date = tuple(int(value) for value in legacy.group("date").split("-"))
+        time = tuple(int(value) for value in re.split(r"[-:]", legacy.group("time")))
+        return date, time, 1, legacy.group("slug"), 1
+    date, stem, suffix = _date_only_key(path, names)
+    return date, (0, 0, 0), 0, stem, suffix
+
+
 def resolve_transcript_path(arguments: Sequence[str], cwd: Path) -> Path:
-    root = (cwd / "docs" / "debates").resolve()
+    root = _ensure_trusted_debates_root(cwd)
     if list(arguments) == ["--latest"]:
-        candidates = sorted(
-            path.resolve()
-            for path in root.glob("*.md")
-            if TIMESTAMPED_TRANSCRIPT_RE.fullmatch(path.name)
-        )
+        candidates: list[Path] = []
+        for path in root.glob("*.md"):
+            if path.is_symlink():
+                raise TranscriptError("Transcript path must not be a symlink")
+            if path.is_file() and (
+                LEGACY_TRANSCRIPT_RE.fullmatch(path.name)
+                or DATE_ONLY_TRANSCRIPT_RE.fullmatch(path.name)
+            ):
+                candidates.append(path.resolve())
         if not candidates:
             raise TranscriptError(
-                "No timestamped Markdown transcripts found in docs/debates"
+                "No Markdown transcripts found in docs/debates"
             )
-        return candidates[-1]
+        names = {path.name for path in candidates}
+        return max(candidates, key=lambda path: _latest_key(path, names))
     if len(arguments) != 1 or arguments[0].startswith("-"):
         raise TranscriptError("Specify exactly one transcript path or --latest")
-    candidate = Path(arguments[0])
+    supplied_candidate = Path(arguments[0])
+    candidate = supplied_candidate
     if not candidate.is_absolute():
         candidate = cwd / candidate
+    if candidate.is_symlink():
+        raise TranscriptError("Transcript path must not be a symlink")
     candidate = candidate.resolve()
     try:
         candidate.relative_to(root)
@@ -622,18 +711,362 @@ def _atomic_write(path: Path, content: str) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def generate(transcript_path: Path) -> Path:
+def _descriptor_flags() -> int:
+    if sys.platform != "linux" or not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise TranscriptError("Linux descriptor-relative publication support is required")
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_existing_directory(path: Path) -> int:
+    current = os.open(os.path.sep, _descriptor_flags())
+    try:
+        for component in path.resolve().parts[1:]:
+            next_descriptor = os.open(component, _descriptor_flags(), dir_fd=current)
+            os.close(current)
+            current = next_descriptor
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _descriptor_identity(descriptor: int) -> tuple[int, int]:
+    value = os.fstat(descriptor)
+    if not stat.S_ISDIR(value.st_mode):
+        raise TranscriptError("publication component is not a directory")
+    return value.st_dev, value.st_ino
+
+
+def _publication_token(token: str) -> dict[str, object]:
+    try:
+        value = json.loads(token)
+    except json.JSONDecodeError as error:
+        raise TranscriptError("publication token is invalid") from error
+    if not isinstance(value, dict):
+        raise TranscriptError("publication token is invalid")
+    required = ("project", "docs", "debates", "filename", "source")
+    if any(key not in value for key in required):
+        raise TranscriptError("publication token is incomplete")
+    filename = value["filename"]
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or Path(filename).name != filename
+        or filename in {".", ".."}
+        or not filename.endswith(".md")
+        or not isinstance(value["source"], (list, tuple))
+    ):
+        raise TranscriptError("publication token is invalid")
+    return value
+
+
+def _token_identity(value: object) -> tuple[int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2 or not all(
+        isinstance(item, int) for item in value
+    ):
+        raise TranscriptError("publication token has an invalid identity")
+    return value[0], value[1]
+
+
+def _wait_for_generation_release(path: str) -> None:
+    barrier = Path(path)
+    barrier.write_text("ready\n", encoding="utf-8")
+    deadline = time.monotonic() + 10
+    while True:
+        if "release\n" in barrier.read_text(encoding="utf-8"):
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError("generation barrier timed out")
+        time.sleep(0.01)
+
+
+def _canonical_generation_descriptors(
+    cwd: Path,
+    token: dict[str, object],
+) -> tuple[int, int, int]:
+    project_descriptor = _open_existing_directory(cwd)
+    docs_descriptor: int | None = None
+    debates_descriptor: int | None = None
+    try:
+        docs_descriptor = os.open("docs", _descriptor_flags(), dir_fd=project_descriptor)
+        debates_descriptor = os.open("debates", _descriptor_flags(), dir_fd=docs_descriptor)
+        identities = (
+            _descriptor_identity(project_descriptor),
+            _descriptor_identity(docs_descriptor),
+            _descriptor_identity(debates_descriptor),
+        )
+        expected = tuple(_token_identity(token[key]) for key in ("project", "docs", "debates"))
+        if identities != expected:
+            raise TranscriptError("canonical transcript directory changed before HTML generation")
+        return project_descriptor, docs_descriptor, debates_descriptor
+    except BaseException:
+        for descriptor in (debates_descriptor, docs_descriptor, project_descriptor):
+            if descriptor is not None:
+                os.close(descriptor)
+        raise
+
+
+def _generate_from_publication(
+    transcript_path: Path,
+    token_text: str,
+    generation_barrier: str | None,
+    post_publication_barrier: str | None,
+) -> Path:
+    token = _publication_token(token_text)
+    cwd = Path.cwd().resolve()
+    root = _ensure_trusted_debates_root(cwd)
+    filename = token["filename"]
+    if not isinstance(filename, str) or transcript_path.resolve() != root / filename:
+        raise TranscriptError("publication token does not match the transcript path")
+    if generation_barrier is not None:
+        _wait_for_generation_release(generation_barrier)
+
+    descriptors = _canonical_generation_descriptors(cwd, token)
+    project_descriptor, docs_descriptor, debates_descriptor = descriptors
+    source_descriptor: int | None = None
+    temporary_name: str | None = None
+    html_identity: tuple[int, int] | None = None
+    try:
+        source_descriptor = os.open(
+            filename,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=debates_descriptor,
+        )
+        source_identity = os.fstat(source_descriptor)
+        expected_source = _token_identity(token["source"])
+        if (source_identity.st_dev, source_identity.st_ino) != expected_source:
+            raise TranscriptError("published transcript identity changed before HTML generation")
+        with os.fdopen(os.dup(source_descriptor), "r", encoding="utf-8") as stream:
+            markdown = stream.read()
+        if not _canonical_generation_descriptors_match(cwd, token):
+            raise TranscriptError("canonical transcript directory changed during HTML generation")
+        transcript = parse_transcript(markdown)
+        content = render_html(transcript)
+        output_name = f"{Path(filename).stem}.html"
+        temporary_name = f".{Path(output_name).stem}-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        temporary_descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=debates_descriptor,
+        )
+        try:
+            payload = content.encode("utf-8")
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(temporary_descriptor, remaining)
+                if written <= 0:
+                    raise OSError("short HTML write")
+                remaining = remaining[written:]
+            os.fsync(temporary_descriptor)
+            temporary_stat = os.fstat(temporary_descriptor)
+            if not stat.S_ISREG(temporary_stat.st_mode):
+                raise TranscriptError("temporary HTML is not a regular file")
+            html_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
+        finally:
+            os.close(temporary_descriptor)
+        if not _canonical_generation_descriptors_match(cwd, token):
+            raise TranscriptError("canonical transcript directory changed before HTML publication")
+        os.replace(
+            temporary_name,
+            output_name,
+            src_dir_fd=debates_descriptor,
+            dst_dir_fd=debates_descriptor,
+        )
+        temporary_name = None
+        try:
+            if post_publication_barrier is not None:
+                _wait_for_generation_release(post_publication_barrier)
+            published_stat = os.stat(
+                output_name,
+                dir_fd=debates_descriptor,
+                follow_symlinks=False,
+            )
+            published_identity_matches = (
+                html_identity is not None
+                and _same_regular_inode(published_stat, html_identity)
+            )
+            canonical_identity_matches = _canonical_generation_descriptors_match(
+                cwd, token
+            )
+            if not published_identity_matches or not canonical_identity_matches:
+                raise TranscriptError(
+                    "published HTML or canonical transcript directory changed after HTML publication"
+                )
+        except BaseException:
+            if html_identity is not None:
+                _unlink_owned_html(debates_descriptor, output_name, html_identity)
+            raise
+        _fsync_generation_directory(debates_descriptor)
+        return root / output_name
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=debates_descriptor)
+            except FileNotFoundError:
+                pass
+        if source_descriptor is not None:
+            os.close(source_descriptor)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _canonical_generation_descriptors_match(cwd: Path, token: dict[str, object]) -> bool:
+    descriptors: tuple[int, int, int] | None = None
+    try:
+        descriptors = _canonical_generation_descriptors(cwd, token)
+        return True
+    except (OSError, TranscriptError):
+        return False
+    finally:
+        if descriptors is not None:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+
+def _fsync_generation_directory(descriptor: int) -> None:
+    try:
+        os.fsync(descriptor)
+    except OSError as error:
+        if error.errno not in {errno.EBADF, errno.EINVAL, errno.ENOTSUP}:
+            raise
+
+
+def _same_regular_inode(
+    value: os.stat_result,
+    identity: tuple[int, int],
+) -> bool:
+    return (
+        stat.S_ISREG(value.st_mode)
+        and value.st_dev == identity[0]
+        and value.st_ino == identity[1]
+    )
+
+
+def _unlink_owned_html(
+    descriptor: int,
+    name: str,
+    identity: tuple[int, int],
+) -> None:
+    try:
+        current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not _same_regular_inode(current, identity):
+        return
+    os.unlink(name, dir_fd=descriptor)
+    _fsync_generation_directory(descriptor)
+
+
+def generate(
+    transcript_path: Path,
+    publication_token: str | None = None,
+    generation_barrier: str | None = None,
+    post_publication_barrier: str | None = None,
+) -> Path:
+    if publication_token is not None:
+        return _generate_from_publication(
+            transcript_path,
+            publication_token,
+            generation_barrier,
+            post_publication_barrier,
+        )
     transcript = parse_transcript(transcript_path.read_text(encoding="utf-8"))
     output_path = transcript_path.with_suffix(".html")
     _atomic_write(output_path, render_html(transcript))
     return output_path
 
 
+def validate_date_placeholder(markdown: str) -> None:
+    placeholder_line = "**Date:** <timestamp>"
+    lines = markdown.splitlines(keepends=True)
+    metadata_lines = [line.rstrip("\r\n") for line in lines]
+    metadata, metadata_end = _parse_metadata(metadata_lines)
+    if metadata.get("Date") != "<timestamp>" or markdown.count(placeholder_line) != 1:
+        raise TranscriptError(
+            "Markdown must contain exactly one canonical top-level Date placeholder"
+        )
+    if any(line == placeholder_line for line in metadata_lines[metadata_end:]):
+        raise TranscriptError(
+            "Markdown must contain exactly one canonical top-level Date placeholder"
+        )
+    replaced = False
+    for index in range(metadata_end):
+        if metadata_lines[index] != placeholder_line:
+            continue
+        line_ending = lines[index][len(lines[index].rstrip("\r\n")):]
+        lines[index] = "**Date:** 2000-01-01" + line_ending
+        replaced = True
+        break
+    if not replaced:
+        raise TranscriptError(
+            "Markdown must contain exactly one canonical top-level Date placeholder"
+        )
+    parse_transcript(
+        "".join(lines),
+        date_only=True,
+        expected_date="2000-01-01",
+    )
+
+
+def validate_stdin(
+    date_only: bool = False,
+    expected_date: str | None = None,
+    date_placeholder: bool = False,
+) -> None:
+    markdown = sys.stdin.read()
+    if date_placeholder:
+        validate_date_placeholder(markdown)
+        return
+    parse_transcript(markdown, date_only=date_only, expected_date=expected_date)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
-        source = resolve_transcript_path(arguments, Path.cwd())
-        output = generate(source)
+        if arguments == ["--validate-stdin"]:
+            validate_stdin()
+            return 0
+        if arguments == ["--validate-stdin", "--date-placeholder"]:
+            validate_stdin(date_placeholder=True)
+            return 0
+        if (
+            len(arguments) == 3
+            and arguments[0] == "--validate-stdin"
+            and arguments[1] == "--date-only"
+        ):
+            validate_stdin(date_only=True, expected_date=arguments[2])
+            return 0
+        publication_token: str | None = None
+        generation_barrier: str | None = None
+        post_publication_barrier: str | None = None
+        if len(arguments) >= 3 and arguments[1] == "--publication-token":
+            publication_token = arguments[2]
+            optional_arguments = arguments[3:]
+            if len(optional_arguments) % 2 != 0:
+                raise TranscriptError("invalid publication generation arguments")
+            for index in range(0, len(optional_arguments), 2):
+                option, value = optional_arguments[index : index + 2]
+                if option == "--generation-barrier" and generation_barrier is None:
+                    generation_barrier = value
+                elif (
+                    option == "--post-publication-barrier"
+                    and post_publication_barrier is None
+                ):
+                    post_publication_barrier = value
+                else:
+                    raise TranscriptError("invalid publication generation arguments")
+            source = Path(arguments[0])
+            if not source.is_absolute():
+                source = Path.cwd() / source
+        else:
+            source = resolve_transcript_path(arguments, Path.cwd())
+        output = generate(
+            source,
+            publication_token,
+            generation_barrier,
+            post_publication_barrier,
+        )
     except (OSError, UnicodeError, TranscriptError) as error:
         print(f"generate_html: {error}", file=sys.stderr)
         return 2

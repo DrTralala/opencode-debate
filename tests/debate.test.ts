@@ -18,9 +18,9 @@ import {
   buildCoordinatorPrompt,
   coordinatorPermission,
   createServer,
-  htmlGeneratorCommand,
   participantTaskPermission,
 } from "../index.ts"
+import { PERSIST_DEBATE_TRANSCRIPT_TOOL } from "../src/transcript-persistence.ts"
 
 function markdownBody(source: string): string {
   const match = /^---\n[\s\S]*?\n---\n\n([\s\S]*)$/.exec(source)
@@ -397,6 +397,40 @@ test("coordinator canonicalises the complete round before advancing", () => {
   assert.match(COORDINATOR_PROMPT, /semantic\/schema errors.*resumed participant.*existing `task_id`/s)
 })
 
+test("coordinator task prompts carry structured dispatch markers for every purpose", () => {
+  assert.match(
+    COORDINATOR_PROMPT,
+    /\[DEBATE_DISPATCH purpose=normal participant=<N> round=1 subagent_type=<resolved subagent_type>\]/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /\[DEBATE_DISPATCH purpose=normal participant=<N> round=<round> subagent_type=<resolved subagent_type>\]/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /purpose=retry participant=<N> round=<round> subagent_type=<existing subagent_type>/,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /purpose=formatter-correction participant=<N> round=<round> subagent_type=<existing subagent_type>/,
+  )
+  assert.match(COORDINATOR_PROMPT, /marker.*exactly.*first line/i)
+})
+
+test("coordinator states task_id continuity and round-one omission explicitly", () => {
+  assert.match(COORDINATOR_PROMPT, /round 1.*omit.*task_id/i)
+  assert.match(COORDINATOR_PROMPT, /later rounds.*exact.*saved.*task_id/i)
+  assert.match(COORDINATOR_PROMPT, /retry.*exact.*saved.*task_id/i)
+  assert.match(COORDINATOR_PROMPT, /formatter correction.*exact.*saved.*task_id/i)
+})
+
+test("coordinator does not duplicate the formatter correction completion instruction", () => {
+  assert.equal(
+    COORDINATOR_PROMPT.toLowerCase().split("repeat until formatting is successful.").length - 1,
+    1,
+  )
+})
+
 test("coordinator formats every participant response before storing or forwarding it", () => {
   assert.match(COORDINATOR_PROMPT, /after every participant response/i)
   assert.match(COORDINATOR_PROMPT, /`format_debate_response`/)
@@ -454,6 +488,52 @@ test("coordinator applies ask and discretion continuation modes without a hard c
   assert.match(COORDINATOR_PROMPT, /no hard extension cap/s)
 })
 
+test("every continuation Question has one neutral procedural rationale", () => {
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Whenever a continuation decision uses the `Question` tool, include exactly one concise procedural rationale based only on debate process state or quality\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Do not add substantive coordinator debate arguments, new research, or topic conclusions to any continuation `Question`\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /This same rationale, recommendation, and option-marking policy applies to the ask-mode continuing recommendation Question, every discretion-mode Question, and the discretion-mode Question used when all participants recommend stopping but ordinary early stop did not trigger\./,
+  )
+})
+
+test("coordinator makes an advisory recommendation for every continuation Question", () => {
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Before every continuation `Question`, make your own neutral coordinator recommendation: stop, one more round, three more rounds, or a custom positive count\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /Base it only on debate process state or quality; do not merely repeat a participant recommendation\./,
+  )
+  assert.match(COORDINATOR_PROMPT, /The recommendation is advisory; the user still chooses\./)
+})
+
+test("continuation Questions mark only the matching fixed or custom recommendation", () => {
+  assert.match(
+    COORDINATOR_PROMPT,
+    /If and only if the recommendation is one of the three fixed choices \(`1 more round`, `3 more rounds`, or `Stop and synthesise now`\), append `\(Recommended\)` to exactly that one matching fixed option and to no other fixed option\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /If the recommendation is a custom positive count, append `\(Recommended\)` to none of the fixed options, state the exact positive count as the advisory recommendation, and do not add or invent a fourth fixed option\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /The user still chooses among the fixed options or enters a custom numeric value under the existing handling\./,
+  )
+  assert.match(
+    COORDINATOR_PROMPT,
+    /This same rationale, recommendation, and option-marking policy applies to the ask-mode continuing recommendation Question, every discretion-mode Question, and the discretion-mode Question used when all participants recommend stopping but ordinary early stop did not trigger\./,
+  )
+})
+
 test("coordinator continuation status matrix scopes all-recommend-stopping to ask mode", () => {
   const statusMatrix = [
     {
@@ -462,7 +542,7 @@ test("coordinator continuation status matrix scopes all-recommend-stopping to as
     },
     {
       state: "discretion asks neutrally when all recommend stopping without consensus",
-      expected: /^- If choosing Question when all participants recommend stopping but ordinary early stop did not trigger, ask: "The debate reached the configured round limit without unanimous consensus\. How many additional rounds should we run\?" Use the same options and response handling, including custom numeric values, as the ask-mode Question flow; otherwise, use the current Question flow\.$/m,
+      expected: /^- If choosing Question in discretion mode, including when all participants recommend stopping but ordinary early stop did not trigger, include exactly one concise procedural rationale and your own neutral advisory recommendation under the policy above\. When all participants recommend stopping without unanimous consensus, ask: "The debate reached the configured round limit without unanimous consensus\. How many additional rounds should we run\?" Otherwise, use the current Question flow\. In either case, use the same fixed options, recommendation marking, and custom numeric\/non-numeric response handling as the ask-mode Question flow; do not add substantive arguments for or against the topic, new research, or topic conclusions\.$/m,
     },
     {
       state: "consensus is not unanimous and all recommend stopping in ask mode",
@@ -489,7 +569,7 @@ test("coordinator continuation status matrix scopes all-recommend-stopping to as
     COORDINATOR_PROMPT,
     /after all participants recommend stopping at `effective_max_rounds`/,
   )
-  const neutralQuestionClause = /^- If choosing Question when all participants recommend stopping[^\n]+$/m.exec(COORDINATOR_PROMPT)?.[0]
+  const neutralQuestionClause = /^- If choosing Question in discretion mode, including when all participants recommend stopping[^\n]+$/m.exec(COORDINATOR_PROMPT)?.[0]
   assert.ok(neutralQuestionClause)
   assert.doesNotMatch(neutralQuestionClause, /recommends continuing/)
 })
@@ -501,17 +581,13 @@ test("coordinator retains the request topic token in the multiline transcript to
   assert.match(COORDINATOR_PROMPT, /<!-- END TOPIC <token> -->/)
 })
 
-test("installed generator command is safely quoted and substituted exactly", () => {
-  const command = htmlGeneratorCommand("file:///tmp/plugin%20dir/index.ts")
-  assert.equal(command, "python3 '/tmp/plugin dir/scripts/generate_html.py' --latest")
-  const prompt = buildCoordinatorPrompt(command)
-  assert.equal(prompt.split(command).length - 1, 1)
-  assert.doesNotMatch(prompt, /__HTML_GENERATOR_COMMAND__/)
-})
-
-test("installed generator command escapes apostrophes for the shell", () => {
-  const command = htmlGeneratorCommand("file:///tmp/plugin%27dir/index.ts")
-  assert.equal(command, "python3 '/tmp/plugin'\"'\"'dir/scripts/generate_html.py' --latest")
+test("coordinator delegates date and transcript persistence to the custom tool", () => {
+  assert.match(COORDINATOR_PROMPT, /persist_debate_transcript/)
+  assert.match(COORDINATOR_PROMPT, /<timestamp>.*placeholder/i)
+  assert.match(COORDINATOR_PROMPT, /slug/i)
+  assert.doesNotMatch(COORDINATOR_PROMPT, /date -u \+%Y-%m-%dT%H-%M-%SZ/)
+  assert.doesNotMatch(COORDINATOR_PROMPT, /generate_html\.py --latest/)
+  assert.doesNotMatch(COORDINATOR_PROMPT, /Use the `write` or `edit` tool/)
 })
 
 test("task permissions are derived from the participant registry", () => {
@@ -576,6 +652,7 @@ test("runtime registration uses every effective participant and omits absent var
   assert.deepEqual(config.permission, {
     bash: "allow",
     format_debate_response: "deny",
+    [PERSIST_DEBATE_TRANSCRIPT_TOOL]: "deny",
     task: {
       "*": "allow",
       general: "ask",
@@ -590,6 +667,7 @@ test("runtime registration uses every effective participant and omits absent var
   assert.deepEqual(config.agent.build.permission, {
     edit: "allow",
     format_debate_response: "deny",
+    [PERSIST_DEBATE_TRANSCRIPT_TOOL]: "deny",
     task: {
       "*": "allow",
       one: "deny",
@@ -603,6 +681,7 @@ test("runtime registration uses every effective participant and omits absent var
   assert.deepEqual(config.agent.reviewer.permission, {
     "*": "allow",
     format_debate_response: "deny",
+    [PERSIST_DEBATE_TRANSCRIPT_TOOL]: "deny",
     task: {
       one: "deny",
       two: "deny",
@@ -687,30 +766,60 @@ test("participant permissions require shell approval and deny external access", 
   })
 })
 
-test("coordinator permits only date and the exact generator command in Bash", () => {
-  const command = "python3 '/tmp/plugin/scripts/generate_html.py' --latest"
-  const permission = coordinatorPermission(command)
-  assert.deepEqual(permission.bash, {
-    "*": "deny",
-    "date -u +%Y-%m-%dT%H-%M-%SZ": "allow",
-    [command]: "allow",
-  })
+test("coordinator permits only the transcript persistence tool for persistence", () => {
+  const permission = coordinatorPermission()
+  assert.equal(permission[PERSIST_DEBATE_TRANSCRIPT_TOOL], "allow")
+  assert.equal(Object.hasOwn(permission, "bash"), false)
+  assert.equal(Object.hasOwn(permission, "edit"), false)
   assert.equal(permission["*"], "deny")
   assert.equal(permission.external_directory, "deny")
 })
 
-test("coordinator permits transcript paths relative to the OpenCode worktree", () => {
-  const permission = coordinatorPermission(
-    "python3 generator.py",
-    "/tmp/worktree/consumer",
-    "/tmp/worktree",
-  )
+test("server registers the coordinator-only transcript persistence tool", async () => {
+  const hooks = await createServer(() => DYNAMIC_REGISTRY)({
+    client: { app: { log: async () => ({ data: true }) } },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  } as never)
 
-  assert.deepEqual(permission.edit, {
-    "*": "deny",
-    "docs/debates/**": "allow",
-    "consumer/docs/debates/**": "allow",
-  })
+  assert.ok(hooks.tool?.[PERSIST_DEBATE_TRANSCRIPT_TOOL])
+})
+
+test("server composes task dispatch lifecycle hooks", async () => {
+  const hooks = await createServer(() => DYNAMIC_REGISTRY)({
+    client: { app: { log: async () => ({ data: true }) } },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  } as never)
+
+  assert.ok(hooks["tool.execute.before"])
+  assert.ok(hooks["tool.execute.after"])
+  assert.ok(hooks.event)
+  assert.ok(hooks.dispose)
+})
+
+test("server composes debate command handling before dispatch validation", async () => {
+  const hooks = await createServer(() => DYNAMIC_REGISTRY)({
+    client: { app: { log: async () => ({ data: true }) } },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  } as never)
+  assert.ok(hooks["command.execute.before"])
+  assert.ok(hooks["tool.execute.before"])
+
+  const output: { parts: Part[] } = { parts: [] }
+  await hooks["command.execute.before"](
+    { command: "debate", sessionID: "coordinator-session", arguments: "topic" },
+    output,
+  )
+  assert.match(output.parts[0]?.type === "text" ? output.parts[0].text : "", /Run a debate with this parsed request\.|BEGIN TOPIC/)
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      { tool: "task", sessionID: "coordinator-session", callID: "ordinary-call" },
+      { args: { description: "ordinary", prompt: "ordinary", subagent_type: "general" } },
+    ),
+    /dispatch marker.*required/i,
+  )
 })
 
 test("static coordinator task permissions contain every registry agent", () => {

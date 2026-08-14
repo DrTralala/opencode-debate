@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import importlib
 from pathlib import Path
 import subprocess
@@ -21,6 +22,32 @@ def formatter_module():
 
 
 class FormatResponseTests(unittest.TestCase):
+    def test_literal_control_characters_inside_strings_are_repaired(self) -> None:
+        controls = "\n\r\t\b\f" + "".join(
+            chr(code) for code in range(0x20) if code not in (8, 9, 10, 12, 13)
+        )
+        turn = f"before{controls}after"
+
+        formatted = formatter_module().format_response(
+            '{"turn":"' + turn + '"}', "round1"
+        )
+
+        self.assertEqual(formatted, json.dumps({"turn": turn}))
+
+    def test_existing_json_escapes_are_not_rewritten(self) -> None:
+        raw = r'{"turn":"line\nquote: \"yes\" slash: \\ nul: \u0000"}'
+
+        formatted = formatter_module().format_response(raw, "round1")
+
+        self.assertEqual(formatted, json.dumps(json.loads(raw)))
+
+    def test_legal_json_whitespace_outside_strings_is_preserved_for_parsing(self) -> None:
+        raw = '\n\t{\r\n "turn"\t:\n "whitespace"\r\n}\n'
+
+        formatted = formatter_module().format_response(raw, "round1")
+
+        self.assertEqual(formatted, '{"turn": "whitespace"}')
+
     def test_round_one_uses_default_json_unicode_escaping(self) -> None:
         raw = (
             "I considered the question first.\n"
@@ -141,6 +168,27 @@ class FormatResponseTests(unittest.TestCase):
             formatter_module().ResponseFormatError, "schema must be round1 or round2"
         ):
             formatter_module().format_response('{"turn":"response"}', "round3")
+
+    def test_non_whitespace_control_characters_outside_strings_remain_invalid(self) -> None:
+        with self.assertRaisesRegex(
+            formatter_module().ResponseFormatError, "Malformed JSON"
+        ):
+            formatter_module().format_response('{"turn"\x00:"response"}', "round1")
+
+    def test_plain_markdown_without_json_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            formatter_module().ResponseFormatError,
+            "Response does not contain a JSON object",
+        ):
+            formatter_module().format_response("This is plain Markdown.", "round1")
+
+    def test_multiple_json_objects_are_rejected_as_ambiguous_syntax(self) -> None:
+        with self.assertRaisesRegex(
+            formatter_module().ResponseFormatError, "Malformed JSON"
+        ):
+            formatter_module().format_response(
+                '{"turn":"first"} and {"turn":"second"}', "round1"
+            )
 
 
 class FormatResponseCliTests(unittest.TestCase):

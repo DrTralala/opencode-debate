@@ -61,6 +61,15 @@ test("formatter wrapper sends the response through stdin and returns canonical J
   )
 })
 
+test("formatter wrapper repairs literal control characters inside strings", () => {
+  const turn = "line 1\nline 2\r\t\b\f\u0000\u0001\u001f"
+
+  assert.equal(
+    runResponseFormatter(`{"turn":"${turn}"}`, "round1"),
+    `{"turn": ${JSON.stringify(turn)}}`,
+  )
+})
+
 test("formatter wrapper propagates strict formatter diagnostics", () => {
   assert.throws(
     () => runResponseFormatter('{"turn":""}', "round1"),
@@ -138,6 +147,16 @@ test("project-local plugin bridge satisfies the OpenCode v1.17.13 file-plugin lo
     "for (const plugin of plugins) hooks.push(await plugin({}))",
     "if (!hooks.some((candidate) => candidate['command.execute.before'])) process.exit(1)",
     "if (!hooks.some((candidate) => candidate.tool?.format_debate_response)) process.exit(1)",
+    "const output = { parts: [{ type: 'text', text: '' }] }",
+    "for (const candidate of hooks) await candidate['command.execute.before']?.({ command: 'debate', sessionID: 'bridge-session', arguments: 'topic' }, output)",
+    "const guard = hooks.find((candidate) => candidate['tool.execute.before'])",
+    "if (!guard) process.exit(1)",
+    "try {",
+    "  await guard['tool.execute.before']({ tool: 'task', sessionID: 'bridge-session', callID: 'unmarked' }, { args: { prompt: 'ordinary task', subagent_type: 'general' } })",
+    "  process.exit(2)",
+    "} catch (error) {",
+    "  if (!String(error).match(/dispatch marker.*required/i)) process.exit(3)",
+    "}",
   ].join("\n")
   const result = spawnSync(
     process.execPath,

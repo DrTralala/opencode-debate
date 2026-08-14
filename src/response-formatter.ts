@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { tool, type Config, type Plugin, type ToolDefinition } from "@opencode-ai/plugin"
+import {
+  PERSIST_DEBATE_TRANSCRIPT_TOOL,
+  createTranscriptPersistenceTool,
+} from "./transcript-persistence.ts"
 
 export type DebateResponseSchema = "round1" | "round2"
 
@@ -13,6 +17,10 @@ export type RunResponseFormatterOptions = {
 
 type PermissionAction = "allow" | "ask" | "deny"
 type PermissionConfiguration = PermissionAction | Record<string, unknown>
+const COORDINATOR_ONLY_TOOLS = [
+  FORMAT_DEBATE_RESPONSE_TOOL,
+  PERSIST_DEBATE_TRANSCRIPT_TOOL,
+] as const
 
 export function responseFormatterScriptPath(moduleUrl: string = import.meta.url): string {
   return fileURLToPath(new URL("../scripts/format_response.py", moduleUrl))
@@ -62,9 +70,9 @@ export function createResponseFormatterTool(moduleUrl: string = import.meta.url)
   })
 }
 
-function withResponseFormatterPermission(
+function withCoordinatorToolPermissions(
   permission: PermissionConfiguration | undefined,
-  action: "allow" | "deny",
+  action: PermissionAction,
 ): Record<string, unknown> {
   const normalised = typeof permission === "object" && permission !== null
     ? permission
@@ -72,20 +80,20 @@ function withResponseFormatterPermission(
       ? {}
       : { "*": permission }
   return Object.fromEntries([
-    ...Object.entries(normalised).filter(([key]) => key !== FORMAT_DEBATE_RESPONSE_TOOL),
-    [FORMAT_DEBATE_RESPONSE_TOOL, action],
+    ...Object.entries(normalised).filter(([key]) => !COORDINATOR_ONLY_TOOLS.includes(key as typeof COORDINATOR_ONLY_TOOLS[number])),
+    ...COORDINATOR_ONLY_TOOLS.map((toolName) => [toolName, action] as const),
   ])
 }
 
-function configureResponseFormatterPermissions(config: Config): void {
-  config.permission = withResponseFormatterPermission(
+function configureCoordinatorToolPermissions(config: Config): void {
+  config.permission = withCoordinatorToolPermissions(
     config.permission as PermissionConfiguration | undefined,
     "deny",
   ) as typeof config.permission
 
   for (const [agentName, agentConfig] of Object.entries(config.agent ?? {})) {
     if (agentConfig === undefined) continue
-    agentConfig.permission = withResponseFormatterPermission(
+    agentConfig.permission = withCoordinatorToolPermissions(
       agentConfig.permission as PermissionConfiguration | undefined,
       agentName === "debate" ? "allow" : "deny",
     ) as typeof agentConfig.permission
@@ -95,8 +103,9 @@ function configureResponseFormatterPermissions(config: Config): void {
 export const ResponseFormatterPlugin: Plugin = async () => ({
   tool: {
     [FORMAT_DEBATE_RESPONSE_TOOL]: createResponseFormatterTool(),
+    [PERSIST_DEBATE_TRANSCRIPT_TOOL]: createTranscriptPersistenceTool(),
   },
   config: async (config) => {
-    configureResponseFormatterPermissions(config)
+    configureCoordinatorToolPermissions(config)
   },
 })

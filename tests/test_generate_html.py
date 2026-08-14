@@ -1,9 +1,13 @@
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+
+from scripts.publish_transcript import _require_descriptor_support
 
 from scripts.generate_html import (
     TranscriptError,
@@ -263,6 +267,23 @@ Separated marker.
         with self.assertRaisesRegex(TranscriptError, "Maximum rounds"):
             parse_transcript(VALID_TRANSCRIPT.replace("**Maximum rounds:** 3\n", ""))
 
+    def test_rejects_duplicate_date_metadata(self) -> None:
+        duplicate = VALID_TRANSCRIPT.replace(
+            "**Date:** 2026-07-26T08:01:32Z\n",
+            "**Date:** 2026-07-26T08:01:32Z\n"
+            "**Date:** 2026-07-27T08:01:32Z\n",
+        )
+        with self.assertRaisesRegex(TranscriptError, r"^Duplicate metadata: Date$"):
+            parse_transcript(duplicate)
+
+    def test_rejects_an_invalid_date_metadata_value(self) -> None:
+        invalid = VALID_TRANSCRIPT.replace(
+            "**Date:** 2026-07-26T08:01:32Z",
+            "**Date:** not-a-date",
+        )
+        with self.assertRaisesRegex(TranscriptError, "Date must be"):
+            parse_transcript(invalid)
+
     def test_rejects_missing_preamble_metadata_despite_section_lookalike(self) -> None:
         broken = VALID_TRANSCRIPT.replace("**Maximum rounds:** 3\n", "").replace(
             "Kimi's first turn.", "**Maximum rounds:** 3\n\nKimi's first turn."
@@ -443,6 +464,79 @@ Second line.
 
 
 class GeneratorCliTests(unittest.TestCase):
+    def test_publication_contract_requires_linux_descriptor_support(self) -> None:
+        if sys.platform != "linux":
+            self.skipTest("descriptor-relative transcript publication is Linux-only")
+        _require_descriptor_support()
+
+        with patch("scripts.publish_transcript.sys.platform", "darwin"):
+            with self.assertRaisesRegex(RuntimeError, "Linux"):
+                _require_descriptor_support()
+
+    def test_validate_stdin_checks_canonical_markdown_without_creating_a_file(self) -> None:
+        with patch("sys.stdin", StringIO(VALID_TRANSCRIPT)):
+            self.assertEqual(main(["--validate-stdin"]), 0)
+
+    def test_latest_selects_date_only_markdown_transcripts(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            debates = root / "docs" / "debates"
+            debates.mkdir(parents=True)
+            older = debates / "2026-08-12-older.md"
+            newer = debates / "2026-08-13-newer.md"
+            older.write_text(VALID_TRANSCRIPT, encoding="utf-8")
+            newer.write_text(VALID_TRANSCRIPT, encoding="utf-8")
+            self.assertEqual(
+                resolve_transcript_path(["--latest"], root), newer.resolve()
+            )
+
+    def test_latest_orders_date_only_collision_suffixes_numerically(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            debates = root / "docs" / "debates"
+            debates.mkdir(parents=True)
+            base = debates / "2026-08-13-topic.md"
+            second = debates / "2026-08-13-topic-2.md"
+            tenth = debates / "2026-08-13-topic-10.md"
+            for path in (base, second, tenth):
+                path.write_text(VALID_TRANSCRIPT, encoding="utf-8")
+
+            self.assertEqual(resolve_transcript_path(["--latest"], root), tenth.resolve())
+
+    def test_latest_rejects_a_symlinked_markdown_candidate(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            debates = root / "docs" / "debates"
+            debates.mkdir(parents=True)
+            outside = root / "outside.md"
+            outside.write_text(VALID_TRANSCRIPT, encoding="utf-8")
+            (debates / "2026-08-13-escape.md").symlink_to(outside)
+
+            with self.assertRaisesRegex(TranscriptError, "symlink"):
+                resolve_transcript_path(["--latest"], root)
+
+    def test_latest_rejects_a_symlinked_docs_directory(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            outside = root / "outside"
+            outside.mkdir()
+            (root / "docs").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(TranscriptError, "symlink"):
+                resolve_transcript_path(["--latest"], root)
+
+    def test_latest_rejects_a_symlinked_parent_component(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            outside = root / "outside"
+            project = outside / "project"
+            (project / "docs" / "debates").mkdir(parents=True)
+            parent_link = root / "workspace-link"
+            parent_link.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(TranscriptError, "symlink"):
+                resolve_transcript_path(["--latest"], parent_link / "project")
+
     def test_direct_path_must_resolve_beneath_docs_debates(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -463,6 +557,29 @@ class GeneratorCliTests(unittest.TestCase):
             self.assertEqual(
                 resolve_transcript_path(["--latest"], root), newer.resolve()
             )
+
+    def test_latest_generates_html_for_hyphenated_legacy_date_metadata(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            debates = root / "docs" / "debates"
+            debates.mkdir(parents=True)
+            source = debates / "2026-07-26T08-01-32Z-legacy.md"
+            source.write_text(
+                VALID_TRANSCRIPT.replace("08:01:32", "08-01-32"),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).parents[1] / "scripts" / "generate_html.py"), "--latest"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(source.with_suffix(".html")))
+            self.assertTrue(source.with_suffix(".html").is_file())
 
     def test_generate_atomically_replaces_sibling_html(self) -> None:
         with TemporaryDirectory() as temporary:

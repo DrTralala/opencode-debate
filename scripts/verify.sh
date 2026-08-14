@@ -69,9 +69,12 @@ assert_tracked "package-lock.json"
 assert_tracked "tsconfig.json"
 assert_tracked "src/participants.ts"
 assert_tracked "src/response-formatter.ts"
+assert_present "src/transcript-persistence.ts"
+assert_present "src/task-dispatch-guard.ts"
 assert_tracked "scripts/debate-participant-body.md"
 assert_tracked "scripts/gen-participants.ts"
 assert_tracked "scripts/generate_html.py"
+assert_present "scripts/publish_transcript.py"
 assert_tracked "scripts/format_response.py"
 assert_tracked "scripts/render_markdown.mjs"
 assert_tracked "scripts/check_package.mjs"
@@ -80,6 +83,8 @@ assert_tracked "README.md"
 assert_tracked "tests/render_markdown.test.mjs"
 assert_tracked "tests/check_package.test.mjs"
 assert_tracked "tests/response-formatter.test.ts"
+assert_present "tests/transcript-persistence.test.ts"
+assert_present "tests/task-dispatch-guard.test.ts"
 assert_tracked "tests/publish_workflow.test.mjs"
 
 # npm publication metadata.
@@ -89,15 +94,16 @@ assert_contains "package.json" '"files": ['
 assert_contains "package.json" '"config.yaml"'
 assert_contains "package.json" '"yaml": "2.9.0"'
 assert_contains "package.json" '"scripts/generate_html.py"'
+assert_contains "package.json" '"scripts/publish_transcript.py"'
 assert_contains "package.json" '"scripts/format_response.py"'
 assert_contains "package.json" '"publishConfig": {'
 assert_contains "package.json" '"access": "public"'
 assert_contains "README.md" '"opencode-debate@latest"'
-assert_contains "README.md" '"opencode-debate@2.2.1"'
+assert_contains "README.md" '"opencode-debate@2.2.2"'
 assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
 assert_not_contains "README.md" 'this package is not published to npm'
-assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v2.2.1'
-assert_contains "README.md" 'img.shields.io/badge/version-v2.2.1-blue.svg?style=flat-square'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v2.2.2'
+assert_contains "README.md" 'img.shields.io/badge/version-v2.2.2-blue.svg?style=flat-square'
 assert_contains "README.md" "selected set's continuation mode"
 assert_contains "README.md" 'Python response-formatter and HTML-generator tests'
 assert_contains "README.md" 'Python 3.9 or later'
@@ -152,8 +158,12 @@ assert_not_contains ".github/workflows/publish.yml" "NODE_AUTH_TOKEN"
 # Command routes to the debate agent; plugin hooks the command lifecycle.
 assert_contains ".opencode/commands/debate.md" "agent: debate"
 assert_contains ".opencode/plugin/debate.ts" "../../src/debate.ts"
+assert_contains ".opencode/plugin/debate.ts" "../../src/task-dispatch-guard.ts"
 assert_contains "src/debate.ts" "command.execute.before"
 assert_contains "src/debate.ts" "DebatePlugin"
+assert_contains "src/task-dispatch-guard.ts" "TaskDispatchGuardPlugin"
+assert_contains "tests/task-dispatch-guard.test.ts" "duplicate configured agent assignments"
+assert_contains "tests/task-dispatch-guard.test.ts" "second debate starts in the same session"
 
 # Coordinator agent structural contract.
 assert_contains ".opencode/agents/debate.md" "mode: primary"
@@ -161,8 +171,9 @@ assert_contains ".opencode/agents/debate.md" "hidden: true"
 assert_contains ".opencode/agents/debate.md" '  "*": "deny"'
 assert_contains ".opencode/agents/debate.md" "external_directory: deny"
 assert_not_contains ".opencode/agents/debate.md" '"*": "ask"'
-assert_contains ".opencode/agents/debate.md" "date -u +%Y-%m-%dT%H-%M-%SZ"
-assert_contains ".opencode/agents/debate.md" "python3 scripts/generate_html.py --latest"
+assert_contains ".opencode/agents/debate.md" "persist_debate_transcript"
+assert_not_contains ".opencode/agents/debate.md" "date -u +%Y-%m-%dT%H-%M-%SZ"
+assert_not_contains ".opencode/agents/debate.md" "python3 scripts/generate_html.py --latest"
 assert_contains ".opencode/agents/debate.md" "docs/debates/"
 assert_contains ".opencode/agents/debate.md" "JSON bundle"
 assert_contains ".opencode/agents/debate.md" "turn_response"

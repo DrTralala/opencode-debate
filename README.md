@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v2.2.1](https://img.shields.io/badge/version-v2.2.1-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.2.1)
+[![Version: v2.2.2](https://img.shields.io/badge/version-v2.2.2-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.2.2)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -16,6 +16,7 @@ Run structured, multi-round debates in OpenCode with three neutral participant a
 - OpenCode 1.17.13 or later
 - Node.js 24.15.0 or later
 - Python 3.9 or later
+- Linux is required for transcript persistence; the safe descriptor publisher uses Linux directory descriptors and `/proc/self/fd` semantics. Other platforms fail closed.
 - Access to the providers used by your selected participant set
 
 ## Installation
@@ -39,7 +40,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@2.2.1"
+    "opencode-debate@2.2.2"
   ]
 }
 ```
@@ -75,10 +76,11 @@ Restart OpenCode after changing plugin or agent files.
 2. The plugin parses leading options, validates the request, and resolves the ordered participant set.
 3. Three neutral participant subagents answer the topic independently in round 1.
 4. In later rounds, each participant resumes its session, receives the other participants' latest turns, and refines its position.
-5. From round 2 onward, the debate stops early only when every participant reports consensus and recommends stopping. At the round limit, the selected set's continuation mode either uses the existing user Question flow (`ask`) or lets the coordinator ask, add one round, or synthesise (`discretion`).
-6. The coordinator returns a final synthesis, writes the canonical Markdown transcript, and invokes the Python generator for matching HTML.
+5. From round 2 onward, the debate stops early only when every participant reports consensus and recommends stopping. At the round limit, the selected set's continuation mode either uses the existing user Question flow (`ask`) or lets the coordinator ask, add one round, or synthesise (`discretion`). Every continuation Question includes one concise process-based rationale and the coordinator's neutral advisory recommendation. If the recommendation is a fixed choice, exactly that matching fixed option is marked `(Recommended)` and no other fixed option is; if it is a custom positive count, no fixed option is marked and the exact count is stated without inventing a fourth option. The user still chooses among the fixed options or enters a custom numeric value, and Questions contain no substantive coordinator arguments, new research, or topic conclusions.
+6. The coordinator returns a final synthesis and calls the coordinator-only persistence tool, which validates and atomically writes the canonical date-only Markdown transcript before generating matching HTML from that exact path.
+7. The dispatch guard registers each valid rewritten debate command, binds all three resolved participant types before accepting tasks, rejects unmarked, duplicate, wrong-agent, and wrong-round dispatches, and resets stale state only when no dispatch is in flight. A fresh command cannot reset an in-flight debate.
 
-Before storing or forwarding any participant response, the coordinator calls the coordinator-only `format_debate_response` custom tool with the `round1` schema for round 1 and `round2` thereafter. The formatter requires the exact schema, preserves participant field values, and returns canonical JSON. Raw responses are never stored or forwarded. Syntax errors may receive syntax-preserving repairs and are retried until formatting succeeds; semantic or schema errors are sent to the resumed participant with the exact diagnostic and retried until valid. Failed formatting attempts are recorded under `## JSON Parsing Problems` in the transcript. The tool is denied globally and to participant agents, and allowed only for the hidden coordinator.
+Before storing or forwarding any participant response, the coordinator calls the coordinator-only `format_debate_response` custom tool with the `round1` schema for round 1 and `round2` thereafter. The formatter requires the exact schema, preserves participant field values, and returns canonical JSON. Raw responses are never stored or forwarded. Syntax errors may receive syntax-preserving repairs and are retried until formatting succeeds; semantic or schema errors are sent to the resumed participant with the exact diagnostic and retried until valid. Failed formatting attempts are recorded under `## JSON Parsing Problems` in the transcript. The response-formatting and transcript-persistence tools are denied globally and to participant agents, and allowed only for the hidden coordinator.
 
 Participant turns stay in their subagent sessions and transcripts; the main session receives the final synthesis.
 
@@ -141,7 +143,7 @@ A participant requires a non-empty `model`. `description` and `variant` are opti
 
 Every set is a mapping whose `participants` array contains exactly three distinct declared participant IDs. The optional `default: yes` marker may appear on at most one set, and only the parsed string `yes` is valid. When no marker is present, the first set in YAML source order is selected. No set name is reserved, so a set named `default` is not required. The command's default rounds are 3; `--rounds` remains the override.
 
-Each set may specify `continuation: ask` or `continuation: discretion`; omission defaults to `ask`. In `ask` mode, when the configured limit is reached without the early-stop condition and at least one participant recommends continuing, the coordinator asks the user whether to run `1 more round`, `3 more rounds`, or `Stop and synthesise now`. A custom numeric answer grants that many additional rounds; a non-numeric answer proceeds to synthesis. In `discretion` mode, the coordinator chooses among asking the user, one autonomous extra round, or synthesis using participant guidance and debate quality. The decision is revisited after each extension and there is no hard extension cap. Three false `consensus_reached` values are guidance only; they do not automatically stop or extend a debate.
+Each set may specify `continuation: ask` or `continuation: discretion`; omission defaults to `ask`. In `ask` mode, when the configured limit is reached without the early-stop condition and at least one participant recommends continuing, the coordinator asks the user whether to run `1 more round`, `3 more rounds`, or `Stop and synthesise now`. Each continuation Question includes one concise process-based rationale and the coordinator's neutral advisory recommendation. For a fixed recommendation, `(Recommended)` appears on exactly the matching fixed option and no other; for a custom positive recommendation, no fixed option is marked, the exact count is stated, and no fourth option is invented. A custom numeric answer grants that many additional rounds; a non-numeric answer proceeds to synthesis. In `discretion` mode, the coordinator chooses among asking the user, one autonomous extra round, or synthesis using participant guidance and debate quality; discretion-mode Questions, including the no-unanimous-consensus case where all participants recommend stopping, use the same rationale, recommendation, option-marking, and custom-count policy. The user still chooses among fixed options or enters a custom numeric value, and Questions contain no substantive coordinator arguments, new research, or topic conclusions. The decision is revisited after each extension and there is no hard extension cap. Three false `consensus_reached` values are guidance only; they do not automatically stop or extend a debate.
 
 Duplicate YAML keys, unknown fields, unsupported versions, incomplete participants, malformed sets, and unknown participant references stop plugin initialisation. Errors identify the absolute file and field path; creation and read errors also report the filesystem operation and cause. There is no implicit in-memory fallback.
 
@@ -161,10 +163,10 @@ Provider availability and supported variants can change independently of this re
 
 Each completed debate writes:
 
-- `docs/debates/<timestamp>-<slug>.md`
-- `docs/debates/<timestamp>-<slug>.html`
+- `docs/debates/YYYY-MM-DD-<slug>.md`
+- `docs/debates/YYYY-MM-DD-<slug>.html`
 
-Markdown is canonical. `scripts/generate_html.py` validates it and atomically generates self-contained HTML. Participant turns, extension decisions, JSON parsing notes, and final synthesis render as sanitized Markdown; Consensus and Stop badges appear below each completed round. The transcript files still require normal local-data protection.
+Markdown is canonical. The coordinator-only `persist_debate_transcript` tool computes the UTC date, validates the canonical Markdown before creating files, atomically claims the base name (then `-2`, `-3`, and later suffixes for collisions), and invokes `scripts/generate_html.py` with the exact claimed Markdown path plus a descriptor identity token. Publication and exact-path HTML generation use Linux no-follow directory descriptors and fail closed if the canonical directory identity changes. Participant turns, extension decisions, JSON parsing notes, and final synthesis render as sanitized Markdown; Consensus and Stop badges appear below each completed round. If HTML generation fails, the Markdown transcript is retained and the concise failure is reported. The transcript files still require normal local-data protection.
 
 The Markdown topic metadata uses matching tokenised markers so multiline topics are preserved verbatim, including blank lines and Markdown-like content:
 
@@ -174,7 +176,7 @@ The Markdown topic metadata uses matching tokenised markers so multiline topics 
 <!-- END TOPIC <token> -->
 ```
 
-The request's token is retained for the matching markers. Do not edit the generated HTML directly; regenerate it from the canonical Markdown.
+The request's token is retained for the matching markers. Do not edit the generated HTML directly; regenerate it from the canonical Markdown. The persistence tool accepts only lowercase kebab-case slugs and retains `--latest` only as a backwards-compatible generator CLI option.
 
 ## Verification
 
@@ -197,11 +199,14 @@ This runs repository contract checks, generated-agent and prompt drift detection
 | `.opencode/plugin/debate.ts` | Loads the project-local plugin bridge |
 | `src/debate.ts` | Parses options and builds canonical debate requests |
 | `src/response-formatter.ts` | Registers the coordinator-only response-formatting tool and runs the packaged validator |
+| `src/task-dispatch-guard.ts` | Guards coordinator participant dispatches by resolved type, purpose, round, and session lifecycle |
+| `src/transcript-persistence.ts` | Registers coordinator-only, date-only, collision-safe transcript persistence |
 | `src/participants.ts` | Creates, loads, validates, and normalises authoritative participant YAML |
 | `scripts/debate-participant-body.md` | Shared participant instructions |
 | `scripts/gen-participants.ts` | Generates participant agent files |
 | `scripts/format_response.py` | Strictly validates and canonicalises participant JSON responses |
 | `scripts/generate_html.py` | Parses Markdown transcripts and atomically generates HTML |
+| `scripts/publish_transcript.py` | Publishes Markdown through Linux trusted directory descriptors without symlink races |
 | `scripts/render_markdown.mjs` | Renders and sanitizes narrative Markdown for HTML transcripts |
 | `scripts/check_package.mjs` | Verifies the exact npm package contents |
 | `scripts/verify.sh` | Runs local and CI validation |
