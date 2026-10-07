@@ -19,7 +19,7 @@ Run structured, multi-round debates in OpenCode with three neutral participant a
 - Linux is required for transcript persistence; the safe descriptor publisher uses Linux directory descriptors and `/proc/self/fd` semantics. Other platforms fail closed.
 - Access to the providers used by your selected participant set
 
-## Installation
+## Quick start
 
 For project-only installation, add the npm package to `plugin` in the project's `opencode.json`:
 
@@ -45,13 +45,19 @@ For a reproducible installation, pin the exact release:
 }
 ```
 
-OpenCode installs and caches the npm package automatically. Do not run `npm install` in the consumer project. Restart OpenCode after changing the plugin specification, then run:
+OpenCode installs and caches the npm package automatically. Do not run `npm install` in the consumer project. Restart OpenCode after changing the plugin specification.
+
+Before running a debate, consider that topics and workspace context read by participants can be sent to third-party model providers. Use only context that you are comfortable sharing with the providers in the selected set. Transcripts may contain sensitive information, so add `docs/debates/` to your project's `.gitignore` before use. Each round invokes three models, and extensions can increase provider usage and cost.
+
+Run a debate:
 
 ```text
 /debate compare two architecture options for this project
 ```
 
 The plugin entry point in `index.ts` registers `/debate`, the coordinator, and all participant agents at runtime. Consumer projects do not copy this repository's `.opencode/` files.
+
+On success, the coordinator returns a final synthesis and prints the Markdown and HTML transcript paths under `docs/debates/`. If HTML generation fails, the Markdown transcript is retained and the failure is reported.
 
 ## Uninstallation
 
