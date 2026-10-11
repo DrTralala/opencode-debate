@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { test } from "node:test"
 import { createManager } from "../src/auto-debate/manager.ts"
@@ -1093,7 +1094,7 @@ test("batch cancellation fences before pending persistence and keeps obsolete/pe
 })
 
 test("obsolete cancellation retains the actual checkpointTranscript record and accepts no late turn or further dispatch", async () => {
-  const project = mkdtempSync(join("/tmp/opencode", "final-fix-obsolete-"))
+  const project = mkdtempSync(join(tmpdir(), "final-fix-obsolete-"))
   const transcriptOwner = { ...owner, directory: project }
   const runtime = new FakeRuntime()
   const id = "cfe823a3-8495-4093-9244-9cb68d08e721"
@@ -1238,7 +1239,7 @@ test("shutdown interrupts active work and aborts its known panel but leaves paus
 })
 
 test("manager checkpoints transcript paths into status and saved state through evaluation", async () => {
-  const project = mkdtempSync(join("/tmp/opencode", "automatic-transcript-manager-"))
+  const project = mkdtempSync(join(tmpdir(), "automatic-transcript-manager-"))
   const transcriptOwner = { ...owner, directory: project }
   const runtime = new FakeRuntime()
   const discussionID = "b2ac59c3-78a1-46a1-8c1b-12a16f5e0001"
@@ -1278,7 +1279,7 @@ test("manager checkpoints transcript paths into status and saved state through e
 })
 
 test("manager checkpoints transcript errors without interrupting findings or retrying debate", async () => {
-  const project = mkdtempSync(join("/tmp/opencode", "automatic-transcript-manager-error-"))
+  const project = mkdtempSync(join(tmpdir(), "automatic-transcript-manager-error-"))
   const transcriptOwner = { ...owner, directory: project }
   const runtime = new FakeRuntime()
   const discussionID = "a27e35f8-f69d-4743-b62e-ae66c0f0c002"
@@ -1320,7 +1321,7 @@ test("manager checkpoints transcript errors without interrupting findings or ret
 })
 
 test("manager clears a saved transcript link when its destination cannot be re-verified", async () => {
-  const project = mkdtempSync(join("/tmp/opencode", "automatic-transcript-manager-replaced-"))
+  const project = mkdtempSync(join(tmpdir(), "automatic-transcript-manager-replaced-"))
   const transcriptOwner = { ...owner, directory: project }
   const discussionID = "8b61a83f-5102-4bb8-a0d4-cd6ca19c4d37"
   const transcriptPath = `docs/debates/auto-${discussionID}.md`

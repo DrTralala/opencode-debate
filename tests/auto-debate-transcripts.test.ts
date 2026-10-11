@@ -14,18 +14,18 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { checkpointTranscript, renderTranscript, saveTranscript } from "../src/auto-debate/transcripts.ts"
 import type { Discussion } from "../src/auto-debate/types.ts"
 
-const temporaryRoot = "/tmp/opencode"
 const discussionID = "86a8f47d-4d7c-4e34-90a2-c29bf67551f4"
 const transcriptFilename = `auto-${discussionID}.md`
 const transcriptPath = `docs/debates/${transcriptFilename}`
 
 function temporaryProject(): string {
-  return mkdtempSync(join(temporaryRoot, "automatic-transcript-"))
+  return mkdtempSync(join(tmpdir(), "automatic-transcript-"))
 }
 
 function discussion(directory: string, overrides: Partial<Discussion> = {}): Discussion {
