@@ -1,4 +1,5 @@
-import type { Plugin, PluginModule } from "@opencode-ai/plugin"
+import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin"
+import { createAutomaticDebatePlugin } from "./src/auto-debate/plugin.ts"
 import { createDebatePlugin } from "./src/debate.ts"
 import {
   DEBATE_PARTICIPANTS,
@@ -350,6 +351,57 @@ export function coordinatorPermission(
   }
 }
 
+type AsyncHook = (...args: any[]) => unknown
+
+function hookError(errors: unknown[], label: string): never {
+  if (errors.length === 1) throw errors[0]
+  const details = errors.map((error) => error instanceof Error ? error.message : String(error))
+  throw new AggregateError(errors, `${label}: ${details.join("; ")}`)
+}
+
+function composeCallbacks<T extends AsyncHook>(label: string, callbacks: (T | undefined)[]): T | undefined {
+  const active = callbacks.filter((callback): callback is T => callback !== undefined)
+  if (active.length === 0) return undefined
+  return (async (...args: Parameters<T>) => {
+    const errors: unknown[] = []
+    for (const callback of active) {
+      try { await callback(...args) } catch (error) { errors.push(error) }
+    }
+    if (errors.length > 0) hookError(errors, label)
+  }) as T
+}
+
+function composePluginHooks(components: readonly Hooks[]): Hooks {
+  const output: Hooks = {}
+  const tools: NonNullable<Hooks["tool"]> = {}
+  for (const component of components) {
+    for (const [name, definition] of Object.entries(component.tool ?? {})) {
+      if (Object.hasOwn(tools, name)) throw new Error(`Plugin tool name collision: ${name}`)
+      tools[name] = definition
+    }
+  }
+  if (Object.keys(tools).length > 0) output.tool = tools
+
+  const command = composeCallbacks("command.execute.before hooks failed", components.map((hook) => hook["command.execute.before"]))
+  const toolBefore = composeCallbacks("tool.execute.before hooks failed", components.map((hook) => hook["tool.execute.before"]))
+  const toolAfter = composeCallbacks("tool.execute.after hooks failed", components.map((hook) => hook["tool.execute.after"]))
+  const event = composeCallbacks("event hooks failed", components.map((hook) => hook.event))
+  const dispose = composeCallbacks("dispose hooks failed", components.map((hook) => hook.dispose))
+  const config = composeCallbacks("config hooks failed", components.map((hook) => hook.config))
+  const system = composeCallbacks("system transform hooks failed", components.map((hook) => hook["experimental.chat.system.transform"]))
+  const compacting = composeCallbacks("session compacting hooks failed", components.map((hook) => hook["experimental.session.compacting"]))
+
+  if (command) output["command.execute.before"] = command
+  if (toolBefore) output["tool.execute.before"] = toolBefore
+  if (toolAfter) output["tool.execute.after"] = toolAfter
+  if (event) output.event = event
+  if (dispose) output.dispose = dispose
+  if (config) output.config = config
+  if (system) output["experimental.chat.system.transform"] = system
+  if (compacting) output["experimental.session.compacting"] = compacting
+  return output
+}
+
 export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveRegistry): Plugin {
   return async (input, options) => {
     let registry: DebateRegistry
@@ -372,17 +424,11 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
     }
 
     const debateHooks = await createDebatePlugin(registry)(input, options)
+    const automaticDebateHooks = await createAutomaticDebatePlugin(registry)(input, options)
     const responseFormatterHooks = await ResponseFormatterPlugin(input, options)
     const taskDispatchGuard = createTaskDispatchGuard()
 
-    return {
-      ...debateHooks,
-      ...responseFormatterHooks,
-      ...taskDispatchGuard.hooks,
-      "command.execute.before": async (input, output) => {
-        await debateHooks["command.execute.before"]?.(input, output)
-        await taskDispatchGuard.hooks["command.execute.before"]?.(input, output)
-      },
+    const indexHooks: Hooks = {
       config: async (config) => {
         config.permission = denyParticipantTasks(
           config.permission as PermissionConfiguration | undefined,
@@ -424,10 +470,9 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
             ...(participant.variant === undefined ? {} : { variant: participant.variant }),
           } as any
         }
-
-        await responseFormatterHooks.config?.(config)
       },
     }
+    return composePluginHooks([debateHooks, indexHooks, automaticDebateHooks, responseFormatterHooks, taskDispatchGuard.hooks])
   }
 }
 

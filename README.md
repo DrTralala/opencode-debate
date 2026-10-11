@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v2.2.2](https://img.shields.io/badge/version-v2.2.2-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v2.2.2)
+[![Version: v3.0.0](https://img.shields.io/badge/version-v3.0.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.0.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -40,7 +40,7 @@ For a reproducible installation, pin the exact release:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-debate@2.2.2"
+    "opencode-debate@3.0.0"
   ]
 }
 ```
@@ -108,6 +108,43 @@ Options are recognised only before the topic begins.
 | `--` | End option parsing and treat all following text as the topic. |
 
 Invalid options produce an error without starting participant subagents.
+
+## Automatic Debates
+
+Automatic-debate support is included in v3.0.0 and disabled by default.
+
+Automatic debate lets an eligible visible main agent consult the configured three-participant neutral panel when a decision still has material uncertainty. The main agent owns the brief, starts and evaluates each discussion, and decides whether to act, investigate, report unresolved uncertainty, or continue. Consensus is not proof that a conclusion is correct.
+
+Add this top-level block to the complete version 2 user configuration described under [Configuration](#configuration); it does not replace the required participant and set entries:
+
+```yaml
+auto_debate:
+  enabled: false
+  max_rounds: 3
+  persist_transcripts: true
+```
+
+`max_rounds` is an integer of at least 3 and applies to each cycle, not the entire discussion. A new discussion can stop after round 2 when every participant recommends stopping; an evaluated follow-up can stop after its first round under the same rule. There is no overall cycle, time, or spending cap. Platform and provider limits still apply, and each round uses the three configured participant models.
+
+Edit the user configuration at `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml`. Configuration is loaded when the plugin initialises, so restart OpenCode after changing it. Conversation controls take effect immediately and do not rewrite YAML:
+
+```text
+/debate-auto on
+/debate-auto status
+/debate-auto off
+/debate-auto stop <discussion-id|all>
+/debate-auto reset
+```
+
+`on` enables new automatic discussions in this conversation; it does not start one by itself. Ask the main agent to consider a decision that has material uncertainty. It can continue independent work while discussions run in the background, but must wait for and evaluate findings before relying on them for dependent work. Materially changed facts or constraints must be given to the panel before its result is used.
+
+`off` prevents new discussions but does not stop existing work or an evaluated continuation. Use `stop <discussion-id>` to cancel one discussion explicitly, or `stop all` to stop every discussion owned by this conversation; other conversations are unaffected. Pending participant stops remain visibly unconfirmed. `reset` removes the conversation override and returns to the configured default. Only a visible main agent can manage automatic discussions; participants cannot start nested debates or change files. The feature does not grant additional tool, workspace, or external-service permissions: OpenCode's normal permission rules and prompts still apply. For `auto_debate` pattern-map permissions, the action patterns are `start`, `status`, `evaluate`, `resume`, and `cancel`; wildcard names and patterns retain native last-match ordering.
+
+Background result updates are reconciled against native session history. If delivery is uncertain, the plugin looks up the original attempt and does not resend it, avoiding duplicate notifications. If a persisted update cannot be confirmed, no notification is guaranteed; check `/debate-auto status` and the saved discussion, and evaluate its findings yourself.
+
+Persistent conversation state is stored as append-only checkpoint records in a native child session with a receipt journal, not as a dump in the main conversation. After a restart, in-flight work is marked interrupted rather than silently replayed. A paused discussion can continue only when its original participant sessions have durable continuation proof; unknown or unclosed starts are treated as interrupted. Continuation also requires a recorded main-agent evaluation and focused feedback.
+
+Separate records are saved by default as incrementally appended, framed Markdown under `docs/debates/auto-<discussion-id>.md`; automatic debates do not generate HTML transcripts. Records contain submitted briefs and participant responses, follow-ups, evaluations, and outcomes—not private internal reasoning. Transcript persistence requires Linux and `/proc/self/fd` descriptor support and fails closed when safe publication cannot be verified. Setting `persist_transcripts: false` disables these separate files only; it does not disable OpenCode session-history retention or provider-side retention. Transcripts can contain project information, so protect `docs/debates/` in the consumer project's `.gitignore`.
 
 ## Participant Sets
 

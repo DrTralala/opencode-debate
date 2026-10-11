@@ -621,6 +621,7 @@ test("runtime registration uses every effective participant and omits absent var
     },
     agent: {
       build: {
+        mode: "primary",
         permission: {
           edit: "allow",
           task: {
@@ -642,6 +643,10 @@ test("runtime registration uses every effective participant and omits absent var
     "five",
     "four",
     "one",
+    "opencode-debate-auto-five",
+    "opencode-debate-auto-four",
+    "opencode-debate-auto-six",
+    "plan",
     "reviewer",
     "six",
     "three",
@@ -662,7 +667,11 @@ test("runtime registration uses every effective participant and omits absent var
       four: "deny",
       five: "deny",
       six: "deny",
+      "opencode-debate-auto-four": "deny",
+      "opencode-debate-auto-five": "deny",
+      "opencode-debate-auto-six": "deny",
     },
+    auto_debate: "deny",
   })
   assert.deepEqual(config.agent.build.permission, {
     edit: "allow",
@@ -676,8 +685,14 @@ test("runtime registration uses every effective participant and omits absent var
       four: "deny",
       five: "deny",
       six: "deny",
+      "opencode-debate-auto-four": "deny",
+      "opencode-debate-auto-five": "deny",
+      "opencode-debate-auto-six": "deny",
     },
+    auto_debate: "allow",
   })
+  assert.equal(config.agent.plan.mode, "primary")
+  assert.equal(config.agent.plan.permission.auto_debate, "allow")
   assert.deepEqual(config.agent.reviewer.permission, {
     "*": "allow",
     format_debate_response: "deny",
@@ -689,7 +704,11 @@ test("runtime registration uses every effective participant and omits absent var
       four: "deny",
       five: "deny",
       six: "deny",
+      "opencode-debate-auto-four": "deny",
+      "opencode-debate-auto-five": "deny",
+      "opencode-debate-auto-six": "deny",
     },
+    auto_debate: "allow",
   })
   for (const name of ["one", "two", "three", "four", "five", "six"]) {
     assert.equal(config.agent[name].hidden, true)
@@ -704,6 +723,9 @@ test("runtime registration uses every effective participant and omits absent var
     four: "allow",
     five: "allow",
     six: "allow",
+    "opencode-debate-auto-four": "deny",
+    "opencode-debate-auto-five": "deny",
+    "opencode-debate-auto-six": "deny",
   })
 })
 
@@ -783,6 +805,29 @@ test("server registers the coordinator-only transcript persistence tool", async 
   } as never)
 
   assert.ok(hooks.tool?.[PERSIST_DEBATE_TRANSCRIPT_TOOL])
+  assert.ok(hooks.tool?.auto_debate)
+})
+
+test("automatic-debate integration composes tools and lifecycle hooks while retaining manual debate parsing", async () => {
+  const hooks = await createServer(() => DYNAMIC_REGISTRY)({
+    client: { app: { log: async () => ({ data: true }) } },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  } as never)
+
+  assert.ok(hooks.tool?.auto_debate)
+  assert.ok(hooks.tool?.format_debate_response)
+  assert.ok(hooks.tool?.[PERSIST_DEBATE_TRANSCRIPT_TOOL])
+  assert.ok(hooks["command.execute.before"])
+  assert.ok(hooks.event)
+  assert.ok(hooks.dispose)
+  assert.ok(hooks.config)
+  assert.ok(hooks["experimental.chat.system.transform"])
+  assert.ok(hooks["experimental.session.compacting"])
+
+  const output: { parts: Part[] } = { parts: [] }
+  await hooks["command.execute.before"]!({ command: "debate", sessionID: "coordinator-session", arguments: "topic" }, output)
+  assert.match(output.parts[0]?.type === "text" ? output.parts[0].text : "", /Run a debate with this parsed request\./)
 })
 
 test("server composes task dispatch lifecycle hooks", async () => {

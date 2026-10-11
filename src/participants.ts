@@ -4,6 +4,8 @@ import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { isMap, isScalar, parseDocument } from "yaml"
+import { DEFAULT_AUTO_DEBATE_CONFIG } from "./auto-debate/state.ts"
+import type { AutoDebateConfig } from "./auto-debate/types.ts"
 
 export type DebateSet = string
 export type DebateParticipantAgent = string
@@ -22,6 +24,7 @@ export type DebateRegistry = Readonly<{
   participants: readonly DebateParticipant[]
   sets: DebateParticipantSets
   continuationBySet?: Readonly<Record<string, DebateContinuation>>
+  autoDebate?: AutoDebateConfig
   defaultSet: DebateSet
 }>
 
@@ -41,6 +44,7 @@ export type ParticipantConfig = {
   version: 2
   participants: Record<string, ParticipantConfigEntry>
   sets: Record<string, ParticipantSetConfig>
+  autoDebate: AutoDebateConfig
   defaultSet: string
 }
 
@@ -78,9 +82,10 @@ export type ParticipantConfigPaths = {
   userPath?: string
 }
 
-const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets"])
+const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets", "auto_debate"])
 const PARTICIPANT_FIELDS = new Set(["description", "model", "variant"])
 const SET_FIELDS = new Set(["participants", "default", "continuation"])
+const AUTO_DEBATE_FIELDS = new Set(["enabled", "max_rounds", "persist_transcripts"])
 const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.yaml", import.meta.url))
 
 function isMapping(value: unknown): value is Record<string, unknown> {
@@ -114,6 +119,35 @@ function optionalNonEmptyString(
     invalid(configPath, fieldPath, "expected a non-empty string")
   }
   return value
+}
+
+function parseAutoDebateConfig(value: unknown, configPath: string): AutoDebateConfig {
+  if (value === undefined) return DEFAULT_AUTO_DEBATE_CONFIG
+  if (!isMapping(value)) invalid(configPath, "auto_debate", "expected a mapping")
+  assertKnownFields(value, AUTO_DEBATE_FIELDS, configPath, "auto_debate")
+
+  const enabled = Object.hasOwn(value, "enabled")
+    ? value.enabled
+    : DEFAULT_AUTO_DEBATE_CONFIG.enabled
+  if (typeof enabled !== "boolean") {
+    invalid(configPath, "auto_debate.enabled", "expected a boolean")
+  }
+
+  const maxRounds = Object.hasOwn(value, "max_rounds")
+    ? value.max_rounds
+    : DEFAULT_AUTO_DEBATE_CONFIG.maxRounds
+  if (typeof maxRounds !== "number" || !Number.isSafeInteger(maxRounds) || maxRounds < 3) {
+    invalid(configPath, "auto_debate.max_rounds", "expected a safe integer greater than or equal to 3")
+  }
+
+  const persistTranscripts = Object.hasOwn(value, "persist_transcripts")
+    ? value.persist_transcripts
+    : DEFAULT_AUTO_DEBATE_CONFIG.persistTranscripts
+  if (typeof persistTranscripts !== "boolean") {
+    invalid(configPath, "auto_debate.persist_transcripts", "expected a boolean")
+  }
+
+  return { enabled, maxRounds, persistTranscripts }
 }
 
 function readConfigSource(configPath: string): string {
@@ -151,6 +185,7 @@ export function parseParticipantConfig(source: string, configPath: string): Part
   if (!isMapping(value)) invalid(configPath, "$", "expected a mapping")
   assertKnownFields(value, TOP_LEVEL_FIELDS, configPath, "$")
   if (value.version !== 2) invalid(configPath, "version", "unsupported version; expected 2")
+  const autoDebate = parseAutoDebateConfig(value.auto_debate, configPath)
 
   const rawParticipants = value.participants
   if (!isMapping(rawParticipants)) invalid(configPath, "participants", "expected a mapping")
@@ -255,6 +290,7 @@ export function parseParticipantConfig(source: string, configPath: string): Part
     version: 2,
     participants: participantsConfig,
     sets,
+    autoDebate,
     defaultSet: markedDefault ?? setOrder[0],
   }
 }
@@ -276,6 +312,7 @@ function normaliseRegistry(config: ParticipantConfig): DebateRegistry {
     participants: Object.freeze(participants),
     sets: Object.freeze(sets),
     continuationBySet: Object.freeze(continuationBySet),
+    autoDebate: Object.freeze({ ...config.autoDebate }),
     defaultSet: config.defaultSet,
   })
 }

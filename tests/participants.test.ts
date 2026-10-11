@@ -34,6 +34,13 @@ sets:
 ${sets}`
 }
 
+function configWithAutoDebate(fields = ""): string {
+  return completeConfig().replace(
+    "sets:\n",
+    `auto_debate:\n${fields}sets:\n`,
+  )
+}
+
 function withTempConfig(source: string, run: (configPath: string) => void): void {
   const directory = mkdtempSync(join(tmpdir(), "opencode-debate-config-"))
   const configPath = join(directory, "config.yaml")
@@ -98,6 +105,11 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
         participants: ["debate-glm", "debate-qwen", "debate-kimi"],
       },
     },
+    auto_debate: {
+      enabled: false,
+      max_rounds: 3,
+      persist_transcripts: true,
+    },
   })
 })
 
@@ -111,6 +123,75 @@ test("packaged compatibility exports are loaded from config.yaml", () => {
 test("description and variant are optional source fields", () => {
   const parsed = parseParticipantConfig(completeConfig(), "/tmp/config.yaml")
   assert.deepEqual(parsed.participants.one, { model: "provider/one" })
+})
+
+test("omitted auto-debate config normalises to the safe defaults", () => {
+  const parsed = parseParticipantConfig(completeConfig(), "/tmp/config.yaml")
+
+  assert.deepEqual(parsed.autoDebate, {
+    enabled: false,
+    maxRounds: 3,
+    persistTranscripts: true,
+  })
+})
+
+test("auto-debate config preserves explicit false values", () => {
+  const parsed = parseParticipantConfig(configWithAutoDebate(
+    "  enabled: false\n  persist_transcripts: false\n",
+  ), "/tmp/config.yaml")
+
+  assert.deepEqual(parsed.autoDebate, {
+    enabled: false,
+    maxRounds: 3,
+    persistTranscripts: false,
+  })
+})
+
+test("auto-debate max rounds accepts the minimum and larger safe values", () => {
+  for (const maxRounds of [3, 25]) {
+    const parsed = parseParticipantConfig(
+      configWithAutoDebate(`  max_rounds: ${maxRounds}\n`),
+      "/tmp/config.yaml",
+    )
+
+    assert.equal(parsed.autoDebate.maxRounds, maxRounds)
+  }
+})
+
+test("auto-debate max rounds rejects values below three and non-safe integers", () => {
+  for (const value of ["2", "0", "-1", "'3'", "3.5", "null", "9007199254740992", "[3]"]) {
+    assertInvalidConfig(
+      configWithAutoDebate(`  max_rounds: ${value}\n`),
+      "auto_debate.max_rounds",
+      /safe integer.*3/i,
+    )
+  }
+})
+
+test("auto-debate boolean fields reject non-boolean values", () => {
+  assertInvalidConfig(
+    configWithAutoDebate('  enabled: "false"\n'),
+    "auto_debate.enabled",
+    /boolean/i,
+  )
+  assertInvalidConfig(
+    configWithAutoDebate("  persist_transcripts: 1\n"),
+    "auto_debate.persist_transcripts",
+    /boolean/i,
+  )
+})
+
+test("auto-debate config rejects minimum-round and other unknown fields precisely", () => {
+  assertInvalidConfig(
+    configWithAutoDebate("  min_rounds: 2\n"),
+    "auto_debate.min_rounds",
+    /unknown field/i,
+  )
+  assertInvalidConfig(
+    configWithAutoDebate("  extra: true\n"),
+    "auto_debate.extra",
+    /unknown field/i,
+  )
 })
 
 test("an omitted continuation mode normalises to ask", () => {
