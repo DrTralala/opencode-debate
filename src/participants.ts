@@ -20,11 +20,17 @@ export type DebateParticipant = Readonly<{
 
 export type DebateParticipantSets = Readonly<Record<string, readonly string[]>>
 
+export type MiniDebateConfig = Readonly<{
+  participant?: string
+  maxRounds: number
+}>
+
 export type DebateRegistry = Readonly<{
   participants: readonly DebateParticipant[]
   sets: DebateParticipantSets
   continuationBySet?: Readonly<Record<string, DebateContinuation>>
   autoDebate?: AutoDebateConfig
+  miniDebate?: MiniDebateConfig
   defaultSet: DebateSet
 }>
 
@@ -45,6 +51,7 @@ export type ParticipantConfig = {
   participants: Record<string, ParticipantConfigEntry>
   sets: Record<string, ParticipantSetConfig>
   autoDebate: AutoDebateConfig
+  miniDebate: MiniDebateConfig
   defaultSet: string
 }
 
@@ -82,10 +89,14 @@ export type ParticipantConfigPaths = {
   userPath?: string
 }
 
-const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets", "auto_debate"])
+const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets", "auto_debate", "mini_debate"])
 const PARTICIPANT_FIELDS = new Set(["description", "model", "variant"])
 const SET_FIELDS = new Set(["participants", "default", "continuation"])
 const AUTO_DEBATE_FIELDS = new Set(["enabled", "set", "max_rounds", "persist_transcripts"])
+const MINI_DEBATE_FIELDS = new Set(["participant", "max_rounds"])
+const MINI_DEBATE_MIN_ROUNDS = 1
+const MINI_DEBATE_MAX_ROUNDS = 10
+const DEFAULT_MINI_DEBATE_CONFIG: MiniDebateConfig = Object.freeze({ maxRounds: 3 })
 const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.yaml", import.meta.url))
 
 function isMapping(value: unknown): value is Record<string, unknown> {
@@ -151,6 +162,34 @@ function parseAutoDebateConfig(value: unknown, configPath: string): AutoDebateCo
   return { enabled, maxRounds, persistTranscripts, ...(set === undefined ? {} : { set }) }
 }
 
+function parseMiniDebateConfig(value: unknown, configPath: string): MiniDebateConfig {
+  if (value === undefined) return DEFAULT_MINI_DEBATE_CONFIG
+  if (!isMapping(value)) invalid(configPath, "mini_debate", "expected a mapping")
+  assertKnownFields(value, MINI_DEBATE_FIELDS, configPath, "mini_debate")
+
+  const participant = optionalNonEmptyString(value.participant, configPath, "mini_debate.participant")
+  const maxRounds = Object.hasOwn(value, "max_rounds")
+    ? value.max_rounds
+    : DEFAULT_MINI_DEBATE_CONFIG.maxRounds
+  if (
+    typeof maxRounds !== "number"
+    || !Number.isSafeInteger(maxRounds)
+    || maxRounds < MINI_DEBATE_MIN_ROUNDS
+    || maxRounds > MINI_DEBATE_MAX_ROUNDS
+  ) {
+    invalid(
+      configPath,
+      "mini_debate.max_rounds",
+      `expected an integer between ${MINI_DEBATE_MIN_ROUNDS} and ${MINI_DEBATE_MAX_ROUNDS}`,
+    )
+  }
+
+  return {
+    ...(participant === undefined ? {} : { participant }),
+    maxRounds,
+  }
+}
+
 function readConfigSource(configPath: string): string {
   try {
     return readFileSync(configPath, "utf8")
@@ -212,6 +251,11 @@ export function parseParticipantConfig(source: string, configPath: string): Part
       ...(description === undefined ? {} : { description }),
       ...(variant === undefined ? {} : { variant }),
     }
+  }
+
+  const miniDebate = parseMiniDebateConfig(value.mini_debate, configPath)
+  if (miniDebate.participant !== undefined && !Object.hasOwn(participantsConfig, miniDebate.participant)) {
+    invalid(configPath, "mini_debate.participant", `unknown participant: ${miniDebate.participant}`)
   }
 
   const rawSets = value.sets
@@ -296,6 +340,7 @@ export function parseParticipantConfig(source: string, configPath: string): Part
     participants: participantsConfig,
     sets,
     autoDebate,
+    miniDebate,
     defaultSet: markedDefault ?? setOrder[0],
   }
 }
@@ -318,6 +363,7 @@ function normaliseRegistry(config: ParticipantConfig): DebateRegistry {
     sets: Object.freeze(sets),
     continuationBySet: Object.freeze(continuationBySet),
     autoDebate: Object.freeze({ ...config.autoDebate }),
+    miniDebate: Object.freeze({ ...config.miniDebate }),
     defaultSet: config.defaultSet,
   })
 }

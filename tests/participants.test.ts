@@ -41,6 +41,13 @@ function configWithAutoDebate(fields = ""): string {
   )
 }
 
+function configWithMiniDebate(fields = ""): string {
+  return completeConfig().replace(
+    "sets:\n",
+    `mini_debate:\n${fields}sets:\n`,
+  )
+}
+
 function withTempConfig(source: string, run: (configPath: string) => void): void {
   const directory = mkdtempSync(join(tmpdir(), "opencode-debate-config-"))
   const configPath = join(directory, "config.yaml")
@@ -219,6 +226,102 @@ test("auto-debate config rejects minimum-round and other unknown fields precisel
     "auto_debate.extra",
     /unknown field/i,
   )
+})
+
+test("omitted mini-debate config normalises to the default rounds without changing automatic settings", () => {
+  const parsed = parseParticipantConfig(completeConfig(), "/tmp/config.yaml")
+
+  assert.deepEqual(parsed.miniDebate, { maxRounds: 3 })
+  assert.deepEqual(parsed.autoDebate, {
+    enabled: false,
+    maxRounds: 3,
+    persistTranscripts: true,
+  })
+})
+
+test("mini-debate config retains participant and rounds independently of automatic settings", () => {
+  const source = completeConfig(`
+  alpha:
+    default: yes
+    participants: [one, two, three]
+  alternate:
+    participants: [unused, two, one]
+`).replace(
+    "sets:\n",
+    "auto_debate:\n  set: alternate\nmini_debate:\n  participant: unused\n  max_rounds: 7\nsets:\n",
+  )
+
+  const parsed = parseParticipantConfig(source, "/tmp/config.yaml")
+
+  assert.deepEqual(parsed.miniDebate, { participant: "unused", maxRounds: 7 })
+  assert.equal(parsed.autoDebate.set, "alternate")
+  assert.equal(parsed.defaultSet, "alpha")
+})
+
+test("mini-debate max rounds accepts the configured bounds", () => {
+  for (const maxRounds of [1, 5, 10]) {
+    const parsed = parseParticipantConfig(
+      configWithMiniDebate(`  max_rounds: ${maxRounds}\n`),
+      "/tmp/config.yaml",
+    )
+
+    assert.equal(parsed.miniDebate.maxRounds, maxRounds)
+  }
+})
+
+test("mini-debate max rounds rejects values outside integer 1 through 10", () => {
+  for (const value of ["0", "11", "-1", "'3'", "3.5", "null", "true", "9007199254740992", "[3]"]) {
+    assertInvalidConfig(
+      configWithMiniDebate(`  max_rounds: ${value}\n`),
+      "mini_debate.max_rounds",
+      /integer between 1 and 10/i,
+    )
+  }
+})
+
+test("mini-debate participant rejects unknown and inherited names", () => {
+  for (const value of ["missing", "toString", "__proto__", "constructor"]) {
+    assertInvalidConfig(
+      configWithMiniDebate(`  participant: ${value}\n`),
+      "mini_debate.participant",
+      /unknown participant/i,
+    )
+  }
+})
+
+test("mini-debate participant rejects blank, null and non-string names", () => {
+  for (const value of ['""', '"   "', "null", "true", "1", "[]", "{}"]) {
+    assertInvalidConfig(
+      configWithMiniDebate(`  participant: ${value}\n`),
+      "mini_debate.participant",
+      /non-empty string/i,
+    )
+  }
+})
+
+test("mini-debate rejects unknown fields and non-mapping blocks", () => {
+  assertInvalidConfig(configWithMiniDebate("  extra: true\n"), "mini_debate.extra", /unknown field/i)
+  assertInvalidConfig(configWithMiniDebate("  min_rounds: 2\n"), "mini_debate.min_rounds", /unknown field/i)
+  assertInvalidConfig(
+    completeConfig().replace("sets:\n", "mini_debate: []\nsets:\n"),
+    "mini_debate",
+    /mapping/i,
+  )
+})
+
+test("mini-debate config normalises to a frozen registry copy", () => {
+  withTempConfig(completeConfig(), (configPath) => {
+    const registry = loadPackagedRegistry(configPath)
+
+    assert.deepEqual(registry.miniDebate, { maxRounds: 3 })
+    assert.equal(Object.isFrozen(registry.miniDebate), true)
+  })
+  withTempConfig(configWithMiniDebate("  participant: unused\n  max_rounds: 5\n"), (configPath) => {
+    const registry = loadPackagedRegistry(configPath)
+
+    assert.deepEqual(registry.miniDebate, { participant: "unused", maxRounds: 5 })
+    assert.equal(Object.isFrozen(registry.miniDebate), true)
+  })
 })
 
 test("an omitted continuation mode normalises to ask", () => {
