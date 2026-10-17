@@ -384,6 +384,66 @@ function captureConfigPermissions(config: Config): CapturedConfigPermissions {
   return captured
 }
 
+/**
+ * Shared config registration for the installed plugin and the project-local
+ * checkout bridge: participant task denials plus mini alias mirroring, the
+ * manual command/coordinator/participant agents, applied in one place.
+ */
+export function createIntegrationConfigHook(registry: DebateRegistry): NonNullable<Hooks["config"]> {
+  return async (config) => {
+    const captured = captureConfigPermissions(config)
+    config.permission = denyParticipantTasks(
+      mirrorParticipantTaskRestrictions(
+        captured.permission,
+        registry.participants,
+      ) as PermissionConfiguration | undefined,
+      registry.participants,
+    ) as typeof config.permission
+    if (!config.agent) config.agent = {}
+    if (!config.command) config.command = {}
+
+    for (const [agentName, agentConfig] of Object.entries(config.agent)) {
+      if (agentName === "debate" || agentConfig === undefined) continue
+      const userPermission = captured.agents.has(agentName)
+        ? captured.agents.get(agentName)
+        : agentConfig.permission as PermissionConfiguration | undefined
+      agentConfig.permission = denyParticipantTasks(
+        mirrorParticipantTaskRestrictions(
+          userPermission,
+          registry.participants,
+        ) as PermissionConfiguration | undefined,
+        registry.participants,
+      ) as typeof agentConfig.permission
+    }
+
+    config.command.debate = {
+      template: "$ARGUMENTS",
+      description: "Run a visible resumable-subagent debate",
+      agent: "debate",
+    }
+
+    config.agent.debate = {
+      description: "Coordinates visible debates using participant subagents with self-contained per-round context",
+      mode: "primary",
+      prompt: COORDINATOR_PROMPT,
+      hidden: true,
+      permission: coordinatorPermission(registry.participants),
+    } as any
+
+    for (const participant of registry.participants) {
+      config.agent[participant.agent] = {
+        description: participant.description,
+        mode: "subagent",
+        model: participant.model,
+        prompt: PARTICIPANT_PROMPT,
+        hidden: true,
+        permission: PARTICIPANT_PERMISSION,
+        ...(participant.variant === undefined ? {} : { variant: participant.variant }),
+      } as any
+    }
+  }
+}
+
 type AsyncHook = (...args: any[]) => unknown
 
 function hookError(errors: unknown[], label: string): never {
@@ -473,58 +533,7 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
     )
 
     const indexHooks: Hooks = {
-      config: async (config) => {
-        const captured = captureConfigPermissions(config)
-        config.permission = denyParticipantTasks(
-          mirrorParticipantTaskRestrictions(
-            captured.permission,
-            registry.participants,
-          ) as PermissionConfiguration | undefined,
-          registry.participants,
-        ) as typeof config.permission
-        if (!config.agent) config.agent = {}
-        if (!config.command) config.command = {}
-
-        for (const [agentName, agentConfig] of Object.entries(config.agent)) {
-          if (agentName === "debate" || agentConfig === undefined) continue
-          const userPermission = captured.agents.has(agentName)
-            ? captured.agents.get(agentName)
-            : agentConfig.permission as PermissionConfiguration | undefined
-          agentConfig.permission = denyParticipantTasks(
-            mirrorParticipantTaskRestrictions(
-              userPermission,
-              registry.participants,
-            ) as PermissionConfiguration | undefined,
-            registry.participants,
-          ) as typeof agentConfig.permission
-        }
-
-        config.command.debate = {
-          template: "$ARGUMENTS",
-          description: "Run a visible resumable-subagent debate",
-          agent: "debate",
-        }
-
-        config.agent.debate = {
-          description: "Coordinates visible debates using participant subagents with self-contained per-round context",
-          mode: "primary",
-          prompt: COORDINATOR_PROMPT,
-          hidden: true,
-          permission: coordinatorPermission(registry.participants),
-        } as any
-
-        for (const participant of registry.participants) {
-          config.agent[participant.agent] = {
-            description: participant.description,
-            mode: "subagent",
-            model: participant.model,
-            prompt: PARTICIPANT_PROMPT,
-            hidden: true,
-            permission: PARTICIPANT_PERMISSION,
-            ...(participant.variant === undefined ? {} : { variant: participant.variant }),
-          } as any
-        }
-      },
+      config: createIntegrationConfigHook(registry),
     }
     return composePluginHooks([
       debateHooks,

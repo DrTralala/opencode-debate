@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -172,13 +172,97 @@ test("project-local plugin bridge satisfies the OpenCode v1.17.13 file-plugin lo
     "  if (!String(error).match(/dispatch marker.*required/i)) process.exit(3)",
     "}",
   ].join("\n")
-  const result = spawnSync(
-    process.execPath,
-    ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", "--input-type=module", "--eval", script],
-    { encoding: "utf8" },
-  )
+  const xdg = mkdtempSync(join(tmpdir(), "opencode-debate-bridge-"))
+  try {
+    const configDir = join(xdg, "opencode", "opencode-debate")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      readFileSync(new URL("../config.yaml", import.meta.url), "utf8"),
+    )
+    const result = spawnSync(
+      process.execPath,
+      ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", "--input-type=module", "--eval", script],
+      { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: xdg } },
+    )
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  } finally {
+    rmSync(xdg, { recursive: true, force: true })
+  }
+})
 
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+test("project-local bridge resolves the effective user registry and mirrors participant task rules", () => {
+  const pluginUrl = new URL("../.opencode/plugin/debate.ts", import.meta.url).href
+  const script = [
+    `const bridge = await import(${JSON.stringify(pluginUrl)})`,
+    "const plugin = Object.values(bridge).find((entry) => typeof entry === 'function')",
+    "if (typeof plugin !== 'function') process.exit(1)",
+    "const input = {",
+    "  client: { session: { get: async () => ({ data: { id: 'local-session', agent: 'build', directory: '/work' } }) } },",
+    "  directory: '/work',",
+    "  worktree: '/work',",
+    "}",
+    "const hooks = await plugin(input)",
+    "const config = {",
+    "  permission: { task: { beta: 'deny' } },",
+    "  agent: {",
+    "    worker: { permission: { task: { alpha: 'ask', 'opencode-debate-mini-alpha': 'deny' } } },",
+    "    reviewer: { permission: { task: { '*': 'allow', gamma: 'ask' } } },",
+    "  },",
+    "}",
+    "await hooks.config(config)",
+    "if (Object.hasOwn(config.agent, 'opencode-debate-mini-debate-kimi')) process.exit(10)",
+    "if (Object.hasOwn(config.permission.task, 'opencode-debate-mini-alpha')) process.exit(11)",
+    "if (config.agent?.['opencode-debate-mini-beta']?.model !== 'provider/beta') process.exit(12)",
+    "if (config.agent?.['opencode-debate-mini-beta']?.variant !== 'high') process.exit(13)",
+    "if (config.agent?.beta?.model !== 'provider/beta') process.exit(14)",
+    "if (config.agent?.debate?.permission?.task?.beta !== 'allow') process.exit(15)",
+    "if (config.permission?.task?.['opencode-debate-mini-beta'] !== 'deny') process.exit(16)",
+    "if (config.agent?.worker?.permission?.task?.alpha !== 'deny') process.exit(17)",
+    "if (config.agent?.worker?.permission?.task?.['opencode-debate-mini-alpha'] !== 'deny') process.exit(18)",
+    "if (config.agent?.reviewer?.permission?.task?.['opencode-debate-mini-gamma'] !== 'ask') process.exit(19)",
+    "const payloadOutput = { parts: [{ type: 'text', text: '' }] }",
+    "await hooks['command.execute.before']({ command: 'mini-debate', sessionID: 'local-session', arguments: 'A topic' }, payloadOutput)",
+    "const text = String(payloadOutput.parts[0]?.text)",
+    "const match = /BEGIN MINI_DEBATE_INVOCATION [^\\n]+\\n([^\\n]+)\\nEND MINI_DEBATE_INVOCATION/.exec(text)",
+    "if (!match) process.exit(20)",
+    "const payload = JSON.parse(match[1])",
+    "if (payload.participant !== 'opencode-debate-mini-beta') process.exit(21)",
+    "if (payload.round_limit !== 7) process.exit(22)",
+  ].join("\n")
+  const xdg = mkdtempSync(join(tmpdir(), "opencode-debate-bridge-user-"))
+  try {
+    const configDir = join(xdg, "opencode", "opencode-debate")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(join(configDir, "config.yaml"), [
+      "version: 2",
+      "participants:",
+      "  alpha:",
+      "    model: provider/alpha",
+      "  beta:",
+      "    model: provider/beta",
+      "    variant: high",
+      "  gamma:",
+      "    model: provider/gamma",
+      "sets:",
+      "  default:",
+      "    default: yes",
+      "    participants: [alpha, beta, gamma]",
+      "mini_debate:",
+      "  participant: beta",
+      "  max_rounds: 7",
+      "",
+    ].join("\n"))
+
+    const result = spawnSync(
+      process.execPath,
+      ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", "--input-type=module", "--eval", script],
+      { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: xdg } },
+    )
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  } finally {
+    rmSync(xdg, { recursive: true, force: true })
+  }
 })
 
 test("installed plugin server registers the response formatter tool", async () => {
