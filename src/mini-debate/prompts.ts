@@ -1,3 +1,5 @@
+import { assertNoDuplicateJsonKeys } from "./protocol.ts"
+
 export type MiniDebateTaskRequest = {
   mini_debate_id: string
   round: number
@@ -28,9 +30,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 export function parseMiniDebateTaskRequest(text: string): MiniDebateTaskRequest {
+  const source = text.trim()
+  assertNoDuplicateJsonKeys(source, "Mini-debate task request")
   let value: unknown
   try {
-    value = JSON.parse(text.trim()) as unknown
+    value = JSON.parse(source) as unknown
   } catch {
     throw new Error("Mini-debate task request is not canonical JSON")
   }

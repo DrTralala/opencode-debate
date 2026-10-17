@@ -1,3 +1,5 @@
+import { parseDocument } from "yaml"
+
 export type MiniDebateFlags = {
   consensus_reached: boolean
   recommend_stopping: boolean
@@ -8,12 +10,22 @@ export type MiniDebateReply = { turn: string } & MiniDebateFlags
 export type MiniDebateDecision = "continue" | "consensus" | "ask" | "stop"
 
 const REPLY_FIELDS = ["turn", "consensus_reached", "recommend_stopping"] as const
+const DUPLICATE_KEY = "DUPLICATE_KEY"
+
+export function assertNoDuplicateJsonKeys(source: string, label: string): void {
+  const document = parseDocument(source, { schema: "json", uniqueKeys: true })
+  if (document.errors.some((error) => error.code === DUPLICATE_KEY)) {
+    throw new Error(`${label} contains duplicate fields`)
+  }
+}
 
 function canonicalJson(text: string): unknown {
   const trimmed = text.trim()
   const fenced = /^```(?:json)?\r?\n([\s\S]*?)\r?\n```$/u.exec(trimmed)
+  const source = fenced === null ? trimmed : fenced[1].trim()
+  assertNoDuplicateJsonKeys(source, "Mini-debate reply")
   try {
-    return JSON.parse(fenced === null ? trimmed : fenced[1].trim()) as unknown
+    return JSON.parse(source) as unknown
   } catch {
     throw new Error("Mini-debate reply is not canonical JSON")
   }

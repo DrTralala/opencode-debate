@@ -367,6 +367,25 @@ test("replies with non-boolean flags are rejected", () => {
   }
 })
 
+test("replies with duplicate top-level keys, including escaped equivalents, are rejected", () => {
+  for (const text of [
+    '{"turn":"x","consensus_reached":false,"consensus_reached":true,"recommend_stopping":true}',
+    '{"turn":"x","consensus_reached":true,"recommend_stopping":false,"recommend_stopping":true}',
+    '{"turn":"x","\\u0074urn":"y","consensus_reached":true,"recommend_stopping":true}',
+    '{"turn":"x","consensus_reached":false,"\\u0063onsensus_reached":true,"recommend_stopping":true}',
+    '{"turn":"x","consensus_reached":true,"recommend_stopping":true,"\\u0072ecommend_stopping":false}',
+  ]) {
+    assert.throws(() => parseMiniDebateReply(text), /duplicate/u, `expected ${JSON.stringify(text)} to fail`)
+  }
+})
+
+test("escaped characters inside canonical reply values are still accepted", () => {
+  assert.deepEqual(
+    parseMiniDebateReply('{"turn":"caf\\u00e9 a\\/b","consensus_reached":true,"recommend_stopping":false}'),
+    { turn: "café a/b", consensus_reached: true, recommend_stopping: false },
+  )
+})
+
 test("round 1 continues for every flag combination, so no early consensus is possible", () => {
   for (const [mc, ms, pc, ps] of FLAG_COMBINATIONS) {
     assert.equal(
@@ -436,6 +455,17 @@ test("non-canonical native task requests are rejected", () => {
     '{"mini_debate_id":"mini-7","round":1,"turn":"x"} trailing text',
   ]) {
     assert.throws(() => parseMiniDebateTaskRequest(text), /Mini-debate task request/u, `expected ${JSON.stringify(text)} to fail`)
+  }
+})
+
+test("task requests with duplicate top-level keys, including escaped equivalents, are rejected", () => {
+  for (const text of [
+    '{"mini_debate_id":"mini-7","mini_debate_id":"other","round":1,"turn":"x"}',
+    '{"mini_debate_id":"mini-7","round":1,"round":2,"turn":"x"}',
+    '{"mini_debate_id":"mini-7","round":1,"turn":"x","\\u0074urn":"y"}',
+    '{"mini_debate_id":"mini-7","\\u006dini_debate_id":"other","round":1,"turn":"x"}',
+  ]) {
+    assert.throws(() => parseMiniDebateTaskRequest(text), /duplicate/u, `expected ${JSON.stringify(text)} to fail`)
   }
 })
 
