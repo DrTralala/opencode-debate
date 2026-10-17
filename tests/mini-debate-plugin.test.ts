@@ -411,13 +411,13 @@ test("config registration detects replacement of its own registration on the sam
 
   const foreignAgent = { mode: "primary" }
   config.agent![ALIAS_ONE] = foreignAgent
-  await assert.rejects(host.hooks.config!(config as never), /collision/i)
+  await assert.rejects(host.hooks.config!(config as never), /modified|collision/i)
   assert.equal(config.agent?.[ALIAS_ONE], foreignAgent)
 
   const foreignCommand = { template: "other" }
   delete config.command![MINI_DEBATE_COMMAND]
   config.command![MINI_DEBATE_COMMAND] = foreignCommand
-  await assert.rejects(host.hooks.config!(config as never), /reserved/i)
+  await assert.rejects(host.hooks.config!(config as never), /modified|reserved/i)
   assert.equal(config.command?.[MINI_DEBATE_COMMAND], foreignCommand)
 
   delete config.command![MINI_DEBATE_COMMAND]
@@ -425,6 +425,26 @@ test("config registration detects replacement of its own registration on the sam
   await host.hooks.config!(config as never)
   assert.ok(config.command?.[MINI_DEBATE_COMMAND])
   assert.ok(config.agent?.[ALIAS_ONE])
+})
+
+test("config registration rejects in-place modification of its own registrations before mutating", async () => {
+  const host = makeHost()
+  const config: { command?: Record<string, any>; agent?: Record<string, any> } = {}
+  await host.hooks.config!(config as never)
+
+  config.agent![ALIAS_ONE].description = "Tampered"
+  await assert.rejects(host.hooks.config!(config as never), /modified/i)
+  assert.equal(config.agent![ALIAS_ONE].description, "Tampered")
+
+  config.agent![ALIAS_ONE].description = "One"
+  config.command![MINI_DEBATE_COMMAND].template = "$OTHER"
+  await assert.rejects(host.hooks.config!(config as never), /modified/i)
+  assert.equal(config.command![MINI_DEBATE_COMMAND].template, "$OTHER")
+
+  config.command![MINI_DEBATE_COMMAND].template = "$ARGUMENTS"
+  await host.hooks.config!(config as never)
+  assert.equal(config.command![MINI_DEBATE_COMMAND].template, "$ARGUMENTS")
+  assert.equal(config.agent![ALIAS_ONE].description, "One")
 })
 
 test("registers a strict mini_debate evaluation and extension tool", async () => {
@@ -825,7 +845,7 @@ test("fails closed on conflicting parent session metadata between event sources"
   await assert.rejects(host.hooks.event!(event as never), /parent session conflict/i)
 })
 
-test("rejects a background running envelope, binds its child and requires its resumption", async () => {
+test("closes the invocation on a background running envelope and rejects retries and replacement until cleanup", async () => {
   const host = makeHost()
   const { payload } = await start(host)
   host.addSession(childSession("child-1"))
@@ -839,19 +859,64 @@ test("rejects a background running envelope, binds its child and requires its re
         metadata: { parentSessionId: "main", sessionId: "child-1" },
       } as never,
     ),
-    /background/i,
+    /background|unresolved/i,
   )
-  assert.equal(host.controller.state.sessions.get("main")!.childSessionID, "child-1")
+  const state = host.controller.state.sessions.get("main")!
+  assert.equal(state.childSessionID, "child-1")
+  assert.equal(state.closed, true)
+  assert.equal(state.background?.callID, "call-1")
+  assert.equal(state.background?.childSessionID, "child-1")
+
   await assert.rejects(
     runTool(host.hooks, { action: "evaluate", round: 1, consensus_reached: false, recommend_stopping: false, rationale: "x" }),
-    /completed participant result/i,
+    /closed/i,
   )
   await assert.rejects(
-    dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE), "main", "call-2"),
-    /resume the bound task_id/i,
+    dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE, "child-1"), "main", "call-2"),
+    /background|unresolved/i,
   )
-  await dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE, "child-1"), "main", "call-3")
-  await complete(host.hooks, "call-3", participantReply(), "child-1")
+  await assert.rejects(
+    dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE), "main", "call-3"),
+    /background|unresolved/i,
+  )
+
+  // A terminal completed event for the background wrapper is not confirmation that its job stopped.
+  await host.hooks.event!(taskCompletedEvent("call-1", "child-1"))
+  await assert.rejects(
+    dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE, "child-1"), "main", "call-4"),
+    /background|unresolved/i,
+  )
+
+  const blockedCommand = await runCommand(host.hooks, "--rounds 1 Another topic")
+  assert.match(blockedCommand, /background|unresolved/i)
+  assert.throws(() => host.controller.release("main"), /background|unresolved|in flight/i)
+
+  await host.hooks.event!(deletedEvent("main"))
+  assert.equal(host.controller.state.sessions.has("main"), false)
+  assert.ok(host.controller.state.tombstones.has("child-1"))
+  await start(host, "--rounds 1 A fresh topic")
+})
+
+test("disposal cleans up unresolved background work and keeps tombstones", async () => {
+  const host = makeHost()
+  const { payload } = await start(host)
+  host.addSession(childSession("child-1"))
+  await dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE))
+  await assert.rejects(
+    host.hooks["tool.execute.after"]!(
+      { tool: "task", sessionID: "main", callID: "call-1", args: {} },
+      {
+        title: "task",
+        output: `<task id="child-1" state="running">\n<task_result>\nstarted\n</task_result>\n</task>`,
+        metadata: { parentSessionId: "main", sessionId: "child-1" },
+      } as never,
+    ),
+    /background|unresolved/i,
+  )
+  await host.hooks.dispose!()
+  assert.equal(host.controller.state.sessions.size, 0)
+  assert.ok(host.controller.state.tombstones.has("child-1"))
+  await start(host, "--rounds 1 A fresh topic")
 })
 
 test("closes the invocation when a background running envelope has conflicting child identity", async () => {
@@ -872,10 +937,13 @@ test("closes the invocation when a background running envelope has conflicting c
   const state = host.controller.state.sessions.get("main")!
   assert.equal(state.closed, true)
   assert.equal(state.childSessionID, undefined)
+  assert.equal(state.background?.callID, "call-1")
   await assert.rejects(
     dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE), "main", "call-2"),
-    /closed/i,
+    /background|unresolved/i,
   )
+  assert.throws(() => host.controller.release("main"), /background|unresolved|in flight/i)
+  await host.hooks.event!(deletedEvent("main"))
   await start(host, "--rounds 1 A fresh topic")
 })
 

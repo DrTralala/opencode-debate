@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { resolve } from "node:path"
+import { isDeepStrictEqual } from "node:util"
 import { tool, type Config, type Hooks, type Plugin } from "@opencode-ai/plugin"
 import { replaceParts } from "../debate.ts"
 import type { DebateParticipant, DebateRegistry } from "../participants.ts"
@@ -51,6 +52,11 @@ export type MiniDebatePendingExtension = {
   askedID?: string
 }
 
+export type MiniDebateBackgroundWork = {
+  callID: string
+  childSessionID?: string
+}
+
 export type MiniDebateSessionState = {
   invocationId: string
   ownerSessionID: string
@@ -67,6 +73,13 @@ export type MiniDebateSessionState = {
   participantFlags?: MiniDebateFlags
   childSessionID?: string
   childDeleted: boolean
+  /**
+   * Set when a background (`state="running"`) task result leaves participant
+   * work unresolved. The invocation is closed and no retry or replacement is
+   * permitted while this marker remains; wrapper completion is not treated as
+   * confirmation that the background job stopped.
+   */
+  background?: MiniDebateBackgroundWork
   calls: Map<string, MiniDebateCallState>
   pendingExtension?: MiniDebatePendingExtension
   grants: number
@@ -423,8 +436,14 @@ export function createMiniDebateController(
   function release(sessionID: string): void {
     const state = sessions.get(sessionID)
     if (state === undefined) return
-    if (activeCallOf(state) !== undefined || state.pendingExtension !== undefined) {
-      throw new Error("Mini-debate cannot be released while a participant task or extension question is in flight")
+    if (
+      activeCallOf(state) !== undefined
+      || state.pendingExtension !== undefined
+      || state.background !== undefined
+    ) {
+      throw new Error(
+        "Mini-debate cannot be released while a participant task, extension question or unresolved background participant work is in flight",
+      )
     }
     releaseState(sessionID)
   }
@@ -607,6 +626,9 @@ export function createMiniDebateController(
       throw reject(`recorded mini-debate child ${taskID} cannot be resumed through another subagent`)
     }
     if (state === undefined) throw reject("no active mini-debate invocation in this session")
+    if (state.background !== undefined) {
+      throw reject("background participant work is unresolved; this invocation cannot be retried")
+    }
     if (state.closed) throw reject("the invocation is closed")
     if (reserved && alias !== state.alias) throw reject(`the selected participant is ${state.alias}`)
     if (rawTaskID !== undefined && taskID === undefined) throw reject("task_id must be a non-empty string")
@@ -664,28 +686,28 @@ export function createMiniDebateController(
   async function registerConfig(config: Config): Promise<void> {
     const previous = ownedRegistrations.get(config)
     const commands = config.command ?? (config.command = {})
-    const commandOwned = previous !== undefined
-      && previous.command !== undefined
-      && commands[MINI_DEBATE_COMMAND] === previous.command
-    if (Object.hasOwn(commands, MINI_DEBATE_COMMAND) && !commandOwned) {
-      throw new Error(`Command /${MINI_DEBATE_COMMAND} is reserved for mini-debate controls`)
+    if (Object.hasOwn(commands, MINI_DEBATE_COMMAND)) {
+      if (previous?.command === undefined) {
+        throw new Error(`Command /${MINI_DEBATE_COMMAND} is reserved for mini-debate controls`)
+      }
+      if (!isDeepStrictEqual(commands[MINI_DEBATE_COMMAND], previous.command)) {
+        throw new Error(`Command /${MINI_DEBATE_COMMAND} registration was modified`)
+      }
     }
     const agents = config.agent ?? (config.agent = {})
     const ownedAliases = previous?.aliases ?? new Map<string, unknown>()
     for (const name of Object.keys(agents)) {
       if (!name.startsWith(MINI_DEBATE_ALIAS_PREFIX)) continue
-      if (ownedAliases.get(name) !== undefined && agents[name] === ownedAliases.get(name)) continue
+      const snapshot = ownedAliases.get(name)
+      if (snapshot !== undefined) {
+        if (isDeepStrictEqual(agents[name], snapshot)) continue
+        throw new Error(`Private mini-debate agent registration was modified: ${name}`)
+      }
       if (aliasNames.has(name)) throw new Error(`Private mini-debate agent name collision: ${name}`)
       throw new Error(`Agent names using reserved prefix ${MINI_DEBATE_ALIAS_PREFIX} are not allowed: ${name}`)
     }
     const registeredAliases = new Map<string, unknown>()
     for (const { participant, alias } of prepared.values()) {
-      if (Object.hasOwn(agents, alias)) {
-        const owned = ownedAliases.get(alias)
-        if (owned === undefined || agents[alias] !== owned) {
-          throw new Error(`Private mini-debate agent name collision: ${alias}`)
-        }
-      }
       agents[alias] = {
         description: participant.description,
         mode: "subagent",
@@ -695,7 +717,7 @@ export function createMiniDebateController(
         permission: participantPermission(),
         ...(participant.variant === undefined ? {} : { variant: participant.variant }),
       } as (typeof agents)[string]
-      registeredAliases.set(alias, agents[alias])
+      registeredAliases.set(alias, structuredClone(agents[alias]))
     }
     commands[MINI_DEBATE_COMMAND] = {
       template: "$ARGUMENTS",
@@ -703,7 +725,7 @@ export function createMiniDebateController(
     } as (typeof commands)[string]
     ownedRegistrations.set(config, {
       aliases: registeredAliases,
-      command: commands[MINI_DEBATE_COMMAND],
+      command: structuredClone(commands[MINI_DEBATE_COMMAND]),
     })
   }
 
@@ -794,6 +816,11 @@ export function createMiniDebateController(
         const parsed = parseMiniDebateArguments(input.arguments, registry)
         if (!parsed.ok) throw new Error(parsed.error)
         const existing = sessions.get(input.sessionID)
+        if (existing !== undefined && existing.background !== undefined) {
+          throw new Error(
+            "A mini-debate invocation with unresolved background participant work cannot be replaced in this session",
+          )
+        }
         if (existing !== undefined && !existing.closed) {
           throw new Error("A mini-debate invocation is already active in this session")
         }
@@ -857,18 +884,22 @@ export function createMiniDebateController(
       if (state === undefined || call === undefined) return
       const envelope = parseTaskEnvelope(output.output)
       if (envelope?.state === "running") {
+        call.status = "failed"
+        state.closed = true
         try {
           bindChild(state, taskChildIdentity(output.output, output.metadata), call)
         } catch (error) {
           // The envelope and metadata disagree, so no child can be trusted as
-          // the single participant child: fail closed and close the invocation
-          // instead of allowing a replacement child.
-          call.status = "failed"
-          state.closed = true
+          // the single participant child. Remember that participant work is
+          // still unresolved and fail closed.
+          state.background = { callID: call.callID }
           throw error
         }
-        if (call.status === "active") call.status = "failed"
-        throw new Error("Mini-debate task rejected: background dispatch is not supported")
+        state.background = {
+          callID: call.callID,
+          ...(call.childSessionID === undefined ? {} : { childSessionID: call.childSessionID }),
+        }
+        throw reject("background participant work is unresolved; this invocation cannot be retried")
       }
       if (envelope?.state === "error") {
         failCall(state, call, output.output, output.metadata)
