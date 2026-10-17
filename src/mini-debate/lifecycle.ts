@@ -23,6 +23,7 @@ export type MiniDebateChildIdentity = {
 
 const ENVELOPE_RE = /^<task id="([^"]+)" state="(running|completed|error)">([\s\S]*)<\/task>$/u
 const QUESTION_FIELDS = ["question", "header", "options", "multiple", "custom"] as const
+const OPTION_FIELDS = ["label", "description"] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false
@@ -101,6 +102,17 @@ export function buildExtensionQuestion(input: {
   }
 }
 
+function matchesExtensionOption(value: unknown, expected: MiniDebateExtensionOption): boolean {
+  if (!isRecord(value)) return false
+  if (
+    Object.keys(value).length !== OPTION_FIELDS.length
+    || !OPTION_FIELDS.every((field) => Object.hasOwn(value, field))
+  ) {
+    return false
+  }
+  return value.label === expected.label && value.description === expected.description
+}
+
 export function matchesExtensionQuestion(value: unknown, expected: MiniDebateExtensionQuestion): boolean {
   if (!isRecord(value)) return false
   if (
@@ -112,10 +124,7 @@ export function matchesExtensionQuestion(value: unknown, expected: MiniDebateExt
   if (value.question !== expected.question || value.header !== expected.header) return false
   if (value.multiple !== false || value.custom !== false) return false
   if (!Array.isArray(value.options) || value.options.length !== expected.options.length) return false
-  return value.options.every((option, index) => {
-    const wanted = expected.options[index]
-    return isRecord(option) && option.label === wanted.label && option.description === wanted.description
-  })
+  return value.options.every((option, index) => matchesExtensionOption(option, expected.options[index]))
 }
 
 export function isExtensionApproval(answers: unknown): boolean {

@@ -380,6 +380,53 @@ test("config registration remains idempotent for its own aliases and command", a
   assert.ok(config.agent?.[ALIAS_ONE])
 })
 
+test("config registration rejects unrelated registrations on a different config object", async () => {
+  const host = makeHost()
+  await host.hooks.config!({} as never)
+
+  const foreignAgent = { mode: "primary" }
+  const foreignCommand = { template: "other" }
+  const conflicting: { command?: Record<string, any>; agent?: Record<string, any> } = {
+    command: { [MINI_DEBATE_COMMAND]: foreignCommand },
+    agent: { [ALIAS_ONE]: foreignAgent },
+  }
+  await assert.rejects(host.hooks.config!(conflicting as never), /reserved|collision/i)
+  assert.equal(conflicting.agent?.[ALIAS_ONE], foreignAgent)
+  assert.equal(conflicting.command?.[MINI_DEBATE_COMMAND], foreignCommand)
+
+  await assert.rejects(
+    host.hooks.config!({ command: {}, agent: { [ALIAS_ONE]: { mode: "primary" } } } as never),
+    /collision/i,
+  )
+  await assert.rejects(
+    host.hooks.config!({ command: { [MINI_DEBATE_COMMAND]: { template: "other" } }, agent: {} } as never),
+    /reserved/i,
+  )
+})
+
+test("config registration detects replacement of its own registration on the same config object", async () => {
+  const host = makeHost()
+  const config: { command?: Record<string, any>; agent?: Record<string, any> } = {}
+  await host.hooks.config!(config as never)
+
+  const foreignAgent = { mode: "primary" }
+  config.agent![ALIAS_ONE] = foreignAgent
+  await assert.rejects(host.hooks.config!(config as never), /collision/i)
+  assert.equal(config.agent?.[ALIAS_ONE], foreignAgent)
+
+  const foreignCommand = { template: "other" }
+  delete config.command![MINI_DEBATE_COMMAND]
+  config.command![MINI_DEBATE_COMMAND] = foreignCommand
+  await assert.rejects(host.hooks.config!(config as never), /reserved/i)
+  assert.equal(config.command?.[MINI_DEBATE_COMMAND], foreignCommand)
+
+  delete config.command![MINI_DEBATE_COMMAND]
+  delete config.agent![ALIAS_ONE]
+  await host.hooks.config!(config as never)
+  assert.ok(config.command?.[MINI_DEBATE_COMMAND])
+  assert.ok(config.agent?.[ALIAS_ONE])
+})
+
 test("registers a strict mini_debate evaluation and extension tool", async () => {
   const host = makeHost()
   const definition = host.hooks.tool?.[MINI_DEBATE_TOOL]
@@ -778,9 +825,10 @@ test("fails closed on conflicting parent session metadata between event sources"
   await assert.rejects(host.hooks.event!(event as never), /parent session conflict/i)
 })
 
-test("rejects a background running envelope and ends the attempt", async () => {
+test("rejects a background running envelope, binds its child and requires its resumption", async () => {
   const host = makeHost()
   const { payload } = await start(host)
+  host.addSession(childSession("child-1"))
   await dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE))
   await assert.rejects(
     host.hooks["tool.execute.after"]!(
@@ -793,11 +841,42 @@ test("rejects a background running envelope and ends the attempt", async () => {
     ),
     /background/i,
   )
+  assert.equal(host.controller.state.sessions.get("main")!.childSessionID, "child-1")
   await assert.rejects(
     runTool(host.hooks, { action: "evaluate", round: 1, consensus_reached: false, recommend_stopping: false, rationale: "x" }),
     /completed participant result/i,
   )
-  await dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE), "main", "call-2")
+  await assert.rejects(
+    dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE), "main", "call-2"),
+    /resume the bound task_id/i,
+  )
+  await dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE, "child-1"), "main", "call-3")
+  await complete(host.hooks, "call-3", participantReply(), "child-1")
+})
+
+test("closes the invocation when a background running envelope has conflicting child identity", async () => {
+  const host = makeHost()
+  const { payload } = await start(host)
+  await dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE))
+  await assert.rejects(
+    host.hooks["tool.execute.after"]!(
+      { tool: "task", sessionID: "main", callID: "call-1", args: {} },
+      {
+        title: "task",
+        output: `<task id="child-a" state="running">\n<task_result>\nstarted\n</task_result>\n</task>`,
+        metadata: { parentSessionId: "main", sessionId: "child-b" },
+      } as never,
+    ),
+    /child session.*(conflict|mismatch)/i,
+  )
+  const state = host.controller.state.sessions.get("main")!
+  assert.equal(state.closed, true)
+  assert.equal(state.childSessionID, undefined)
+  await assert.rejects(
+    dispatch(host.hooks, taskCall(taskRequest(1, "x", payload.mini_debate_id), ALIAS_ONE), "main", "call-2"),
+    /closed/i,
+  )
+  await start(host, "--rounds 1 A fresh topic")
 })
 
 test("terminal error and permission-rejection events end the attempt without opening a participant", async () => {
@@ -965,6 +1044,13 @@ test("rejects a mismatched question call and payload while an extension is pendi
   )
   await assert.rejects(host.hooks.event!(askedEvent({ ...question, header: "Other" }, "question-1")), /question/i)
   await assert.rejects(host.hooks.event!(askedEvent(question, "question-2", "other-call")), /question call|recorded/i)
+  const extraOption = {
+    ...question,
+    options: (question.options as Array<Record<string, unknown>>).map((option, index) =>
+      index === 0 ? { ...option, recommended: true } : option
+    ),
+  }
+  await assert.rejects(host.hooks.event!(askedEvent(extraOption, "question-3")), /question/i)
   assert.equal(host.controller.state.sessions.get("main")!.pendingExtension?.askedID, undefined)
 })
 
