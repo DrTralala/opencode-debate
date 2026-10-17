@@ -96,23 +96,28 @@ test("formatter wrapper invokes python3 directly without a shell", (t) => {
   const marker = join(root, "shell-injected")
   mkdirSync(bin)
   const fakePython = join(bin, "python3")
-  writeFileSync(fakePython, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"turn\": \"safe\"}'\n")
+  writeFileSync(fakePython, "#!/bin/sh\nwhile IFS= read -r line; do :; done\nprintf '%s\\n' '{\"turn\": \"safe\"}'\n")
   chmodSync(fakePython, 0o755)
   const dangerousModuleUrl = pathToFileURL(
     join(root, "plugin;touch${IFS}$FORMATTER_MARKER;#", "src", "response-formatter.ts"),
   ).href
 
-  const output = runResponseFormatter('{"turn":"safe"}', "round1", {
+  const options = {
     moduleUrl: dangerousModuleUrl,
     env: {
       ...process.env,
       PATH: bin,
       FORMATTER_MARKER: marker,
     },
-  })
+  }
+  const output = runResponseFormatter('{"turn":"safe"}', "round1", options)
 
   assert.equal(output, '{"turn": "safe"}')
   assert.equal(existsSync(marker), false)
+
+  // Input larger than the pipe buffer fails with EPIPE unless the stub really
+  // drains stdin under this restricted PATH.
+  assert.equal(runResponseFormatter("x".repeat(256 * 1024), "round1", options), '{"turn": "safe"}')
 })
 
 test("response formatter plugin registers an executable custom tool", async () => {
