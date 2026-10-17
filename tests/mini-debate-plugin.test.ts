@@ -537,6 +537,32 @@ test("does not mirror allows, plugin-shaped denials, or existing alias rules", (
   assert.equal(mirrorParticipantTaskRestrictions(undefined, REGISTRY.participants), undefined)
 })
 
+test("leaves alias-only restrictions untouched and never relaxes a stricter alias", () => {
+  const aliasWildcard = `${MINI_DEBATE_ALIAS_PREFIX}*`
+
+  const aliasOnlyDeny = { task: { [aliasWildcard]: "deny" } }
+  assert.equal(mirrorParticipantTaskRestrictions(aliasOnlyDeny, REGISTRY.participants), aliasOnlyDeny)
+
+  const aliasOnlyAsk = { task: { [aliasWildcard]: "ask" } }
+  assert.equal(mirrorParticipantTaskRestrictions(aliasOnlyAsk, REGISTRY.participants), aliasOnlyAsk)
+
+  const stricterAlias = { task: { "on*": "ask", [aliasWildcard]: "deny" } }
+  assert.equal(mirrorParticipantTaskRestrictions(stricterAlias, REGISTRY.participants), stricterAlias)
+
+  const matchedDeny = { task: { "on*": "deny", [aliasWildcard]: "deny" } }
+  assert.equal(mirrorParticipantTaskRestrictions(matchedDeny, REGISTRY.participants), matchedDeny)
+
+  // An explicit original restriction still overrides a looser alias wildcard.
+  assert.deepEqual(
+    mirrorParticipantTaskRestrictions({ task: { "on*": "ask", [aliasWildcard]: "allow" } }, REGISTRY.participants),
+    { task: { "on*": "ask", [aliasWildcard]: "allow", [ALIAS_ONE]: "ask" } },
+  )
+  assert.deepEqual(
+    mirrorParticipantTaskRestrictions({ task: { "on*": "deny", [aliasWildcard]: "allow" } }, REGISTRY.participants),
+    { task: { "on*": "deny", [aliasWildcard]: "allow", [ALIAS_ONE]: "deny" } },
+  )
+})
+
 test("registers a strict mini_debate evaluation and extension tool", async () => {
   const host = makeHost()
   const definition = host.hooks.tool?.[MINI_DEBATE_TOOL]

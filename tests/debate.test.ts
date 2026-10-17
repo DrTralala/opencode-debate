@@ -1027,6 +1027,46 @@ test("config preserves explicit alias rules and never adds alias allows", async 
   assert.equal(effectiveTaskPermission(config.permission, MINI_ALIAS_ONE), "allow")
 })
 
+test("config leaves alias-only wildcard restrictions intact at global and agent layers", async () => {
+  const aliasWildcard = `${MINI_DEBATE_ALIAS_PREFIX}*`
+  const aliases = HANDOFF_REGISTRY.participants.map(({ agent }) => `${MINI_DEBATE_ALIAS_PREFIX}${agent}`)
+  const cases = [
+    { action: "deny", map: { [aliasWildcard]: "deny" } },
+    { action: "ask", map: { [aliasWildcard]: "ask" } },
+  ] as const
+
+  for (const layer of ["global", "agent"] as const) {
+    for (const item of cases) {
+      const hooks = await createHandoffHooks()
+      const config: any = layer === "global"
+        ? { permission: { task: { ...item.map } } }
+        : { agent: { build: { mode: "primary", permission: { task: { ...item.map } } } } }
+      await hooks.config!(config)
+      const permission = layer === "global" ? config.permission : config.agent.build.permission
+      for (const alias of aliases) {
+        assert.equal(Object.hasOwn(permission.task, alias), false, `${layer} ${alias} must not gain an exact mirror`)
+        assert.equal(effectiveTaskPermission(permission, alias), item.action, `${layer} ${alias}`)
+      }
+    }
+  }
+})
+
+test("config mirrors explicit original restrictions without relaxing stricter alias rules", async () => {
+  const aliasWildcard = `${MINI_DEBATE_ALIAS_PREFIX}*`
+
+  const stricter = await createHandoffHooks()
+  const stricterConfig: any = { permission: { task: { "on*": "ask", [aliasWildcard]: "deny" } } }
+  await stricter.config!(stricterConfig)
+  assert.equal(Object.hasOwn(stricterConfig.permission.task, MINI_ALIAS_ONE), false)
+  assert.equal(effectiveTaskPermission(stricterConfig.permission, MINI_ALIAS_ONE), "deny")
+
+  const looser = await createHandoffHooks()
+  const looserConfig: any = { permission: { task: { "on*": "deny", [aliasWildcard]: "allow" } } }
+  await looser.config!(looserConfig)
+  assert.equal(looserConfig.permission.task[MINI_ALIAS_ONE], "deny")
+  assert.equal(effectiveTaskPermission(looserConfig.permission, MINI_ALIAS_ONE), "deny")
+})
+
 test("starting /mini-debate hands off from an active manual session", async () => {
   const hooks = await createHandoffHooks()
 

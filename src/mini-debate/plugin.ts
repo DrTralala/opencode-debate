@@ -146,6 +146,8 @@ const COMMAND_ADOPTION_FIELDS = new Set(["name", "description", "template"])
 
 type TaskPermissionAction = "allow" | "ask" | "deny"
 
+const TASK_PERMISSION_RANK: Record<TaskPermissionAction, number> = { allow: 0, ask: 1, deny: 2 }
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false
   const prototype = Object.getPrototypeOf(value)
@@ -180,9 +182,11 @@ function effectiveTaskAction(task: Record<string, unknown>, value: string): Task
 
 /**
  * Mirror captured user `task` restrictions for original participant names onto
- * the corresponding mini aliases. Only deny/ask actions are mirrored, the
- * mirrored rule is appended last inside the same permission map so a later
- * wildcard cannot reopen it, and an explicit alias rule is never overwritten.
+ * the corresponding mini aliases. Only an explicitly matched original rule
+ * with a deny/ask action is mirrored; an unmatched original leaves alias rules
+ * untouched, the mirror never relaxes a stricter alias rule, the mirrored rule
+ * is appended last inside the same permission map so a later wildcard cannot
+ * reopen it, and an explicit alias rule is never overwritten.
  */
 export function mirrorParticipantTaskRestrictions(
   permission: unknown,
@@ -194,9 +198,10 @@ export function mirrorParticipantTaskRestrictions(
   for (const { agent } of participants) {
     const alias = `${MINI_DEBATE_ALIAS_PREFIX}${agent}`
     if (Object.hasOwn(task, alias)) continue
-    const original = effectiveTaskAction(task, agent) ?? "ask"
+    const original = effectiveTaskAction(task, agent)
+    if (original === undefined || original === "allow") continue
     const aliasAction = effectiveTaskAction(task, alias) ?? "ask"
-    if (original === "allow" || original === aliasAction) continue
+    if (TASK_PERMISSION_RANK[aliasAction] >= TASK_PERMISSION_RANK[original]) continue
     mirrored.push([alias, original])
   }
   if (mirrored.length === 0) return permission
