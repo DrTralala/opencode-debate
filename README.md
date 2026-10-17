@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v3.1.0](https://img.shields.io/badge/version-v3.1.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.1.0)
+[![Version: v3.2.0](https://img.shields.io/badge/version-v3.2.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.2.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
