@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { TaskDispatchGuardPlugin } from "../src/task-dispatch-guard.ts"
+import { createTaskDispatchGuard, TaskDispatchGuardPlugin } from "../src/task-dispatch-guard.ts"
 
 type Purpose = "normal" | "retry" | "formatter-correction"
 type ParticipantTypes = readonly [string, string, string]
@@ -946,6 +946,89 @@ test("clears all dispatch state when the plugin is disposed", async () => {
   await hooks.dispose?.()
   activatedSessions.get(hooks as object)?.clear()
   await before(hooks, "debate-1", "call-2", args)
+})
+
+test("releases one completed session without disturbing another session", async () => {
+  const guard = createTaskDispatchGuard()
+  const args = taskArgs("normal", 1, 1, { subagentType: "debate-one" })
+
+  await activate(guard.hooks, "released-session")
+  await activate(guard.hooks, "retained-session")
+  await before(guard.hooks, "released-session", "released-call", args)
+  await after(guard.hooks, "released-session", "released-call")
+  await before(guard.hooks, "retained-session", "active-call", taskArgs("normal", 1, 1, { subagentType: "debate-one" }))
+
+  guard.release("released-session")
+
+  assert.equal(guard.state.coordinatorSessions.has("released-session"), false)
+  assert.equal(guard.state.sessions.has("released-session"), false)
+  assert.equal(guard.state.coordinatorSessions.has("retained-session"), true)
+  await ordinaryTask(guard.hooks, "released-session", "ordinary-call")
+  await assert.rejects(
+    ordinaryTask(guard.hooks, "retained-session", "ordinary-call"),
+    /dispatch marker.*required/i,
+  )
+
+  // Releasing an unknown session is a no-op.
+  guard.release("unknown-session")
+})
+
+test("release refuses an active dispatch and preserves its state", async () => {
+  const guard = createTaskDispatchGuard()
+  const args = taskArgs("normal", 1, 1, { subagentType: "debate-one" })
+
+  await activate(guard.hooks, "active-session")
+  await before(guard.hooks, "active-session", "call-1", args)
+
+  assert.throws(() => guard.release("active-session"), /active dispatch/i)
+  assert.equal(guard.state.coordinatorSessions.has("active-session"), true)
+  await assert.rejects(
+    before(guard.hooks, "active-session", "call-2", args),
+    /duplicate active|already active/i,
+  )
+})
+
+test("beforeStart runs before new manual state commits", async () => {
+  const seen: string[] = []
+  const guard = createTaskDispatchGuard({
+    beforeStart: (sessionID) => {
+      seen.push(sessionID)
+      if (sessionID === "blocked-session") throw new Error("hand-off blocked")
+    },
+  })
+
+  await activate(guard.hooks, "allowed-session")
+  assert.deepEqual(seen, ["allowed-session"])
+  assert.equal(guard.state.coordinatorSessions.has("allowed-session"), true)
+
+  await assert.rejects(activate(guard.hooks, "blocked-session"), /hand-off blocked/)
+  assert.equal(guard.state.coordinatorSessions.has("blocked-session"), false)
+  assert.equal(guard.state.sessions.has("blocked-session"), false)
+  await ordinaryTask(guard.hooks, "blocked-session", "ordinary-call")
+})
+
+test("a failed beforeStart cannot erase an existing completed enrolment", async () => {
+  let blocked = false
+  const guard = createTaskDispatchGuard({
+    beforeStart: () => {
+      if (blocked) throw new Error("release denied")
+    },
+  })
+  const args = taskArgs("normal", 1, 1, { subagentType: "debate-one" })
+
+  await activate(guard.hooks, "session")
+  await before(guard.hooks, "session", "call-1", args)
+  await after(guard.hooks, "session", "call-1")
+
+  blocked = true
+  await assert.rejects(activate(guard.hooks, "session"), /release denied/)
+  blocked = false
+
+  assert.equal(guard.state.coordinatorSessions.has("session"), true)
+  await assert.rejects(
+    before(guard.hooks, "session", "call-2", args),
+    /duplicate completed|already completed/i,
+  )
 })
 
 test("ignores unrelated tool lifecycle hooks", async () => {

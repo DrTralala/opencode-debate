@@ -21,6 +21,10 @@ import {
   participantTaskPermission,
 } from "../index.ts"
 import { PERSIST_DEBATE_TRANSCRIPT_TOOL } from "../src/transcript-persistence.ts"
+import {
+  MINI_DEBATE_ALIAS_PREFIX,
+  MINI_DEBATE_COMMAND,
+} from "../src/mini-debate/plugin.ts"
 
 function markdownBody(source: string): string {
   const match = /^---\n[\s\S]*?\n---\n\n([\s\S]*)$/.exec(source)
@@ -46,6 +50,127 @@ const DYNAMIC_REGISTRY: DebateRegistry = {
     custom: "discretion",
   },
   defaultSet: "custom",
+}
+
+const HANDOFF_REGISTRY: DebateRegistry = {
+  ...DYNAMIC_REGISTRY,
+  defaultSet: "default",
+  miniDebate: { participant: "one", maxRounds: 3 },
+}
+
+const MINI_ALIAS_ONE = `${MINI_DEBATE_ALIAS_PREFIX}one`
+
+type HandoffHooks = Awaited<ReturnType<ReturnType<typeof createServer>>>
+
+function handoffInput() {
+  const directory = "/tmp/project"
+  const sessions = new Map<string, { id: string; agent: string; directory: string }>([
+    ["handoff", { id: "handoff", agent: "build", directory }],
+  ])
+  return {
+    input: {
+      client: {
+        app: { log: async () => ({ data: true }) },
+        session: {
+          get: async ({ path }: { path: { id: string } }) => {
+            const record = sessions.get(path.id)
+            return record ? { data: { ...record } } : { data: null }
+          },
+        },
+      },
+      directory,
+      worktree: directory,
+    } as never,
+    sessions,
+  }
+}
+
+async function createHandoffHooks(): Promise<HandoffHooks> {
+  const server = createServer(() => HANDOFF_REGISTRY)
+  return server(handoffInput().input)
+}
+
+async function runCommand(
+  hooks: HandoffHooks,
+  command: string,
+  sessionID: string,
+  args: string,
+): Promise<string> {
+  const output = { parts: [{ type: "text" as const, text: "" }] }
+  await hooks["command.execute.before"]!({ command, sessionID, arguments: args }, output as never)
+  return output.parts.map((part) => part.text).join("")
+}
+
+async function dispatchTask(
+  hooks: HandoffHooks,
+  sessionID: string,
+  callID: string,
+  args: Record<string, unknown>,
+) {
+  await hooks["tool.execute.before"]!({ tool: "task", sessionID, callID }, { args: { ...args } } as never)
+}
+
+function probeMiniTask(hooks: HandoffHooks, sessionID: string, callID: string) {
+  return dispatchTask(hooks, sessionID, callID, {
+    description: "Participant",
+    prompt: "invalid",
+    subagent_type: MINI_ALIAS_ONE,
+  })
+}
+
+function probeManualTask(hooks: HandoffHooks, sessionID: string, callID: string) {
+  return dispatchTask(hooks, sessionID, callID, {
+    description: "Ordinary",
+    prompt: "ordinary task",
+    subagent_type: "general",
+  })
+}
+
+function matchesPermissionPattern(value: string, pattern: string): boolean {
+  let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*").replace(/\?/g, ".")
+  if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+  return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s").test(value.replaceAll("\\", "/"))
+}
+
+function effectiveTaskPermission(permission: unknown, value: string): string {
+  let action = "ask"
+  if (typeof permission === "string") {
+    return matchesPermissionPattern(value, "*") ? permission : action
+  }
+  if (typeof permission !== "object" || permission === null) return action
+  for (const [name, rules] of Object.entries(permission as Record<string, unknown>)) {
+    if (!matchesPermissionPattern("task", name)) continue
+    if (typeof rules === "string") {
+      if (matchesPermissionPattern(value, "*")) action = rules
+      continue
+    }
+    if (typeof rules !== "object" || rules === null) continue
+    for (const [pattern, candidate] of Object.entries(rules as Record<string, unknown>)) {
+      if (typeof candidate !== "string") continue
+      if (matchesPermissionPattern(value, pattern)) action = candidate
+    }
+  }
+  return action
+}
+
+function miniInvocationId(text: string): string {
+  const match = /BEGIN MINI_DEBATE_INVOCATION [^\n]+\n([^\n]+)\nEND MINI_DEBATE_INVOCATION/u.exec(text)
+  assert.ok(match, `mini-debate prompt missing invocation payload: ${text}`)
+  return (JSON.parse(match[1]) as { mini_debate_id: string }).mini_debate_id
+}
+
+async function dispatchMiniRound(
+  hooks: HandoffHooks,
+  sessionID: string,
+  callID: string,
+  miniDebateId: string,
+) {
+  await dispatchTask(hooks, sessionID, callID, {
+    description: "Participant",
+    prompt: JSON.stringify({ mini_debate_id: miniDebateId, round: 1, turn: "opening" }),
+    subagent_type: MINI_ALIAS_ONE,
+  })
 }
 
 test("default rounds when --rounds absent", () => {
@@ -646,6 +771,12 @@ test("runtime registration uses every effective participant and omits absent var
     "opencode-debate-auto-five",
     "opencode-debate-auto-four",
     "opencode-debate-auto-six",
+    "opencode-debate-mini-five",
+    "opencode-debate-mini-four",
+    "opencode-debate-mini-one",
+    "opencode-debate-mini-six",
+    "opencode-debate-mini-three",
+    "opencode-debate-mini-two",
     "plan",
     "reviewer",
     "six",
@@ -841,6 +972,130 @@ test("server composes task dispatch lifecycle hooks", async () => {
   assert.ok(hooks["tool.execute.after"])
   assert.ok(hooks.event)
   assert.ok(hooks.dispose)
+})
+
+test("config mirrors user task restrictions to mini aliases without copying plugin denials", async () => {
+  const hooks = await createHandoffHooks()
+  const config: any = {
+    permission: { bash: "allow", task: { "*": "allow", general: "ask", one: "deny" } },
+    agent: {
+      build: { mode: "primary", permission: { edit: "allow", task: { "*": "allow", two: "deny" } } },
+      reviewer: { permission: "allow" },
+    },
+  }
+
+  await hooks.config!(config)
+
+  const aliasTwo = `${MINI_DEBATE_ALIAS_PREFIX}two`
+  const globalTask = config.permission.task
+  assert.equal(globalTask[MINI_ALIAS_ONE], "deny")
+  assert.equal(Object.hasOwn(globalTask, aliasTwo), false)
+  assert.equal(globalTask["*"], "allow")
+  assert.equal(globalTask.general, "ask")
+  assert.equal(globalTask.one, "deny")
+  assert.equal(effectiveTaskPermission(config.permission, MINI_ALIAS_ONE), "deny")
+  assert.equal(effectiveTaskPermission(config.permission, aliasTwo), "allow")
+  const globalKeys = Object.keys(globalTask)
+  assert.ok(
+    globalKeys.indexOf(MINI_ALIAS_ONE) < globalKeys.indexOf("one"),
+    "the alias mirror must precede the plugin participant denials",
+  )
+  for (const { agent } of HANDOFF_REGISTRY.participants) assert.equal(globalTask[agent], "deny")
+
+  const agentTask = config.agent.build.permission.task
+  assert.equal(agentTask[aliasTwo], "deny")
+  assert.equal(Object.hasOwn(agentTask, MINI_ALIAS_ONE), false)
+  assert.equal(effectiveTaskPermission(config.agent.build.permission, "one"), "deny")
+  assert.equal(effectiveTaskPermission(config.agent.build.permission, aliasTwo), "deny")
+  assert.equal(effectiveTaskPermission(config.agent.build.permission, "general"), "allow")
+
+  const reviewerTask = config.agent.reviewer.permission.task
+  assert.equal(Object.hasOwn(reviewerTask, MINI_ALIAS_ONE), false)
+  assert.equal(effectiveTaskPermission(config.agent.reviewer.permission, MINI_ALIAS_ONE), "allow")
+  assert.equal(effectiveTaskPermission(config.agent.reviewer.permission, "one"), "deny")
+})
+
+test("config preserves explicit alias rules and never adds alias allows", async () => {
+  const hooks = await createHandoffHooks()
+  const config: any = {
+    permission: { task: { one: "deny", [MINI_ALIAS_ONE]: "allow" } },
+  }
+
+  await hooks.config!(config)
+
+  assert.equal(config.permission.task[MINI_ALIAS_ONE], "allow")
+  assert.equal(effectiveTaskPermission(config.permission, MINI_ALIAS_ONE), "allow")
+})
+
+test("starting /mini-debate hands off from an active manual session", async () => {
+  const hooks = await createHandoffHooks()
+
+  await runCommand(hooks, "debate", "handoff", "topic")
+  await assert.rejects(probeManualTask(hooks, "handoff", "before"), /dispatch marker.*required/i)
+
+  const text = await runCommand(hooks, MINI_DEBATE_COMMAND, "handoff", "A topic")
+  assert.match(text, /BEGIN MINI_DEBATE_INVOCATION/)
+
+  await probeManualTask(hooks, "handoff", "after")
+  await assert.rejects(probeMiniTask(hooks, "handoff", "alias"), /not canonical JSON/)
+})
+
+test("starting /debate hands off from an idle mini invocation", async () => {
+  const hooks = await createHandoffHooks()
+
+  const text = await runCommand(hooks, MINI_DEBATE_COMMAND, "handoff", "A topic")
+  assert.match(text, /BEGIN MINI_DEBATE_INVOCATION/)
+  await assert.rejects(probeMiniTask(hooks, "handoff", "before"), /not canonical JSON/)
+
+  await runCommand(hooks, "debate", "handoff", "topic")
+  await assert.rejects(probeMiniTask(hooks, "handoff", "after"), /no active mini-debate invocation/i)
+  await assert.rejects(probeManualTask(hooks, "handoff", "manual"), /dispatch marker.*required/i)
+})
+
+test("an active mini task rejects the manual start without erasing mini state", async () => {
+  const hooks = await createHandoffHooks()
+  const text = await runCommand(hooks, MINI_DEBATE_COMMAND, "handoff", "A topic")
+  await dispatchMiniRound(hooks, "handoff", "mini-call", miniInvocationId(text))
+
+  await assert.rejects(runCommand(hooks, "debate", "handoff", "topic"), /in flight/i)
+
+  await assert.rejects(
+    dispatchMiniRound(hooks, "handoff", "mini-retry", miniInvocationId(text)),
+    /already in flight/i,
+  )
+  await probeManualTask(hooks, "handoff", "ordinary")
+})
+
+test("an active manual dispatch rejects the mini start without erasing manual state", async () => {
+  const hooks = await createHandoffHooks()
+  await runCommand(hooks, "debate", "handoff", "topic")
+  await dispatchTask(hooks, "handoff", "manual-call", {
+    description: "Participant 1",
+    prompt: "[DEBATE_DISPATCH purpose=normal participant=1 round=1 subagent_type=one]\nReturn the participant response.",
+    subagent_type: "one",
+  })
+
+  const text = await runCommand(hooks, MINI_DEBATE_COMMAND, "handoff", "A topic")
+  assert.match(text, /Mini-debate command unavailable/)
+  assert.match(text, /active dispatch/i)
+
+  await assert.rejects(probeManualTask(hooks, "handoff", "ordinary"), /dispatch marker.*required/i)
+  await assert.rejects(probeMiniTask(hooks, "handoff", "alias"), /no active mini-debate invocation/)
+})
+
+test("invalid command parses cannot release the other side's state", async () => {
+  const mini = await createHandoffHooks()
+  const miniText = await runCommand(mini, MINI_DEBATE_COMMAND, "handoff", "A topic")
+  assert.match(miniText, /BEGIN MINI_DEBATE_INVOCATION/)
+  const invalidDebate = await runCommand(mini, "debate", "handoff", "--bogus")
+  assert.match(invalidDebate, /arguments are invalid/i)
+  await assert.rejects(probeMiniTask(mini, "handoff", "alias"), /not canonical JSON/)
+
+  const manual = await createHandoffHooks()
+  await runCommand(manual, "debate", "handoff", "topic")
+  const invalidMini = await runCommand(manual, MINI_DEBATE_COMMAND, "handoff", "--rounds 0 topic")
+  assert.match(invalidMini, /Mini-debate command unavailable/)
+  await assert.rejects(probeManualTask(manual, "handoff", "ordinary"), /dispatch marker.*required/i)
 })
 
 test("server composes debate command handling before dispatch validation", async () => {

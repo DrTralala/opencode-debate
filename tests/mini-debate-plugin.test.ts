@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
   createMiniDebateController,
+  mirrorParticipantTaskRestrictions,
   MINI_DEBATE_ALIAS_PREFIX,
   MINI_DEBATE_COMMAND,
+  MINI_DEBATE_COMMAND_DESCRIPTION,
   MINI_DEBATE_TOOL,
   type MiniDebateController,
 } from "../src/mini-debate/plugin.ts"
@@ -445,6 +447,94 @@ test("config registration rejects in-place modification of its own registrations
   await host.hooks.config!(config as never)
   assert.equal(config.command![MINI_DEBATE_COMMAND].template, "$ARGUMENTS")
   assert.equal(config.agent![ALIAS_ONE].description, "One")
+})
+
+test("config registration adopts the matching project-local mini-debate command file", async () => {
+  const host = makeHost()
+  const config: { command?: Record<string, any>; agent?: Record<string, any> } = {
+    command: {
+      [MINI_DEBATE_COMMAND]: {
+        name: MINI_DEBATE_COMMAND,
+        description: MINI_DEBATE_COMMAND_DESCRIPTION,
+        template: "$ARGUMENTS",
+      },
+    },
+    agent: {},
+  }
+
+  await host.hooks.config!(config as never)
+  assert.deepEqual(config.command?.[MINI_DEBATE_COMMAND], {
+    template: "$ARGUMENTS",
+    description: MINI_DEBATE_COMMAND_DESCRIPTION,
+  })
+  await host.hooks.config!(config as never)
+  assert.deepEqual(config.command?.[MINI_DEBATE_COMMAND], {
+    template: "$ARGUMENTS",
+    description: MINI_DEBATE_COMMAND_DESCRIPTION,
+  })
+})
+
+test("config registration rejects a modified project-local command regardless of name", async () => {
+  const base = {
+    name: MINI_DEBATE_COMMAND,
+    description: MINI_DEBATE_COMMAND_DESCRIPTION,
+    template: "$ARGUMENTS",
+  }
+  const rejected = [
+    { ...base, name: "other" },
+    { ...base, template: "$OTHER" },
+    { ...base, description: "Different description" },
+    { ...base, agent: "build" },
+    { ...base, subtask: true },
+  ]
+  for (const command of rejected) {
+    const host = makeHost()
+    await assert.rejects(
+      host.hooks.config!({ command: { [MINI_DEBATE_COMMAND]: command }, agent: {} } as never),
+      /reserved/i,
+    )
+  }
+})
+
+test("mirrors captured user task restrictions onto mini aliases in last-match order", () => {
+  const permission = {
+    bash: "allow",
+    task: { "*": "allow", one: "deny", general: "ask" },
+  }
+
+  assert.deepEqual(mirrorParticipantTaskRestrictions(permission, REGISTRY.participants), {
+    bash: "allow",
+    task: { "*": "allow", one: "deny", general: "ask", [ALIAS_ONE]: "deny" },
+  })
+
+  // A wildcard pattern that matches the original name mirrors the effective restriction.
+  assert.deepEqual(mirrorParticipantTaskRestrictions({ task: { "on*": "deny" } }, REGISTRY.participants), {
+    task: { "on*": "deny", [ALIAS_ONE]: "deny" },
+  })
+
+  // An ask restriction after a wildcard allow is mirrored so it stays effective.
+  assert.deepEqual(mirrorParticipantTaskRestrictions({ task: { "*": "allow", two: "ask" } }, REGISTRY.participants), {
+    task: { "*": "allow", two: "ask", [ALIAS_TWO]: "ask" },
+  })
+})
+
+test("does not mirror allows, plugin-shaped denials, or existing alias rules", () => {
+  const reopened = { task: { one: "deny", "*": "allow" } }
+  assert.equal(mirrorParticipantTaskRestrictions(reopened, REGISTRY.participants), reopened)
+
+  const covered = { task: { "*": "deny" } }
+  assert.equal(mirrorParticipantTaskRestrictions(covered, REGISTRY.participants), covered)
+
+  const explicitAlias = { task: { one: "deny", [ALIAS_ONE]: "allow" } }
+  assert.equal(mirrorParticipantTaskRestrictions(explicitAlias, REGISTRY.participants), explicitAlias)
+
+  const allAllowed = { task: { "*": "allow" } }
+  assert.equal(mirrorParticipantTaskRestrictions(allAllowed, REGISTRY.participants), allAllowed)
+
+  const stringTask = { task: "deny" }
+  assert.equal(mirrorParticipantTaskRestrictions(stringTask, REGISTRY.participants), stringTask)
+  assert.equal(mirrorParticipantTaskRestrictions("allow", REGISTRY.participants), "allow")
+  assert.equal(mirrorParticipantTaskRestrictions(undefined, REGISTRY.participants), undefined)
 })
 
 test("registers a strict mini_debate evaluation and extension tool", async () => {

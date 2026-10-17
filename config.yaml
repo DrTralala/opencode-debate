@@ -40,3 +40,7 @@ auto_debate:
   set: default
   max_rounds: 3
   persist_transcripts: true
+# Optional mini-debate defaults. Omit participant to use the default set's first member.
+mini_debate:
+  participant: debate-kimi
+  max_rounds: 3

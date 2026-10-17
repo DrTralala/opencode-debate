@@ -23,6 +23,8 @@ import { miniDebateDecision, parseMiniDebateReply, type MiniDebateDecision, type
 export const MINI_DEBATE_ALIAS_PREFIX = "opencode-debate-mini-"
 export const MINI_DEBATE_COMMAND = "mini-debate"
 export const MINI_DEBATE_TOOL = "mini_debate"
+export const MINI_DEBATE_COMMAND_DESCRIPTION =
+  "Run a bounded mini-debate with one neutral participant in this session"
 
 export type MiniDebatePluginOptions = {
   /**
@@ -140,11 +142,65 @@ const PARTICIPANT_PROMPT = [
 const EVALUATE_FIELDS = ["action", "round", "consensus_reached", "recommend_stopping", "rationale"] as const
 const EXTENSION_FIELDS = ["action", "rounds"] as const
 const EXTENSION_MAX_ROUNDS = 10
+const COMMAND_ADOPTION_FIELDS = new Set(["name", "description", "template"])
+
+type TaskPermissionAction = "allow" | "ask" | "deny"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
+}
+
+function adoptableMiniDebateCommand(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (Object.keys(value).some((key) => !COMMAND_ADOPTION_FIELDS.has(key))) return false
+  if (value.name !== undefined && value.name !== MINI_DEBATE_COMMAND) return false
+  return value.template === "$ARGUMENTS" && value.description === MINI_DEBATE_COMMAND_DESCRIPTION
+}
+
+// OpenCode matches permission rules as ordered wildcards and resolves the last
+// match. Mirror that evaluation when reading captured user permission maps.
+function wildcardPermissionMatch(value: string, pattern: string): boolean {
+  let escaped = pattern.replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*").replace(/\?/g, ".")
+  if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+  return new RegExp(`^${escaped}$`, process.platform === "win32" ? "si" : "s")
+    .test(value.replaceAll("\\", "/"))
+}
+
+function effectiveTaskAction(task: Record<string, unknown>, value: string): TaskPermissionAction | undefined {
+  let result: TaskPermissionAction | undefined
+  for (const [pattern, action] of Object.entries(task)) {
+    if (action !== "allow" && action !== "ask" && action !== "deny") continue
+    if (wildcardPermissionMatch(value, pattern)) result = action
+  }
+  return result
+}
+
+/**
+ * Mirror captured user `task` restrictions for original participant names onto
+ * the corresponding mini aliases. Only deny/ask actions are mirrored, the
+ * mirrored rule is appended last inside the same permission map so a later
+ * wildcard cannot reopen it, and an explicit alias rule is never overwritten.
+ */
+export function mirrorParticipantTaskRestrictions(
+  permission: unknown,
+  participants: readonly DebateParticipant[],
+): unknown {
+  if (!isRecord(permission) || !isRecord(permission.task)) return permission
+  const task = permission.task
+  const mirrored: [string, TaskPermissionAction][] = []
+  for (const { agent } of participants) {
+    const alias = `${MINI_DEBATE_ALIAS_PREFIX}${agent}`
+    if (Object.hasOwn(task, alias)) continue
+    const original = effectiveTaskAction(task, agent) ?? "ask"
+    const aliasAction = effectiveTaskAction(task, alias) ?? "ask"
+    if (original === "allow" || original === aliasAction) continue
+    mirrored.push([alias, original])
+  }
+  if (mirrored.length === 0) return permission
+  return { ...permission, task: Object.fromEntries([...Object.entries(task), ...mirrored]) }
 }
 
 function messageOf(error: unknown): string {
@@ -687,11 +743,12 @@ export function createMiniDebateController(
     const previous = ownedRegistrations.get(config)
     const commands = config.command ?? (config.command = {})
     if (Object.hasOwn(commands, MINI_DEBATE_COMMAND)) {
-      if (previous?.command === undefined) {
+      if (previous?.command !== undefined) {
+        if (!isDeepStrictEqual(commands[MINI_DEBATE_COMMAND], previous.command)) {
+          throw new Error(`Command /${MINI_DEBATE_COMMAND} registration was modified`)
+        }
+      } else if (!adoptableMiniDebateCommand(commands[MINI_DEBATE_COMMAND])) {
         throw new Error(`Command /${MINI_DEBATE_COMMAND} is reserved for mini-debate controls`)
-      }
-      if (!isDeepStrictEqual(commands[MINI_DEBATE_COMMAND], previous.command)) {
-        throw new Error(`Command /${MINI_DEBATE_COMMAND} registration was modified`)
       }
     }
     const agents = config.agent ?? (config.agent = {})
@@ -721,7 +778,7 @@ export function createMiniDebateController(
     }
     commands[MINI_DEBATE_COMMAND] = {
       template: "$ARGUMENTS",
-      description: "Run a bounded mini-debate with one neutral participant in this session",
+      description: MINI_DEBATE_COMMAND_DESCRIPTION,
     } as (typeof commands)[string]
     ownedRegistrations.set(config, {
       aliases: registeredAliases,

@@ -232,13 +232,35 @@ function resetCompletedDebate(
   calls: Map<CallKey, DispatchRecord>,
   sessionID: string,
   participantTypes: Map<number, string>,
+  beforeStart: ((sessionID: string) => void) | undefined,
 ): void {
   if (hasActiveCalls(calls, sessionID)) {
     throw error("cannot start a new debate while the current debate has an active dispatch")
   }
+  // The hand-off callback runs before any new manual state is committed, so a
+  // failure here cannot erase or half-adopt the caller's dispatch state.
+  beforeStart?.(sessionID)
   sessions.delete(sessionID)
   participantSubagentTypes.set(sessionID, participantTypes)
   coordinatorSessions.add(sessionID)
+  for (const [key, record] of calls) {
+    if (record.sessionID === sessionID) calls.delete(key)
+  }
+}
+
+function releaseSession(
+  coordinatorSessions: Set<string>,
+  sessions: Map<string, SessionState>,
+  participantSubagentTypes: Map<string, Map<number, string>>,
+  calls: Map<CallKey, DispatchRecord>,
+  sessionID: string,
+): void {
+  if (hasActiveCalls(calls, sessionID)) {
+    throw new Error("Debate session release rejected: the current debate has an active dispatch")
+  }
+  sessions.delete(sessionID)
+  participantSubagentTypes.delete(sessionID)
+  coordinatorSessions.delete(sessionID)
   for (const [key, record] of calls) {
     if (record.sessionID === sessionID) calls.delete(key)
   }
@@ -456,9 +478,18 @@ function observeEvent(
   }
 }
 
-export function createTaskDispatchGuard(): {
+export type TaskDispatchGuardOptions = {
+  /**
+   * Called during a valid `/debate` command before the new manual guard state
+   * is committed. Throwing denies the command and leaves existing state intact.
+   */
+  beforeStart?: (sessionID: string) => void
+}
+
+export function createTaskDispatchGuard(options: TaskDispatchGuardOptions = {}): {
   hooks: Hooks
   clear(): void
+  release(sessionID: string): void
   state: TaskDispatchGuardState
 } {
   const coordinatorSessions = new Set<string>()
@@ -486,6 +517,7 @@ export function createTaskDispatchGuard(): {
           calls,
           input.sessionID,
           participantTypes,
+          options.beforeStart,
         )
       },
       "tool.execute.before": async (input, output) => {
@@ -518,6 +550,9 @@ export function createTaskDispatchGuard(): {
       },
     },
     state: { coordinatorSessions, sessions },
+    release(sessionID) {
+      releaseSession(coordinatorSessions, sessions, participantSubagentTypes, calls, sessionID)
+    },
     clear() {
       coordinatorSessions.clear()
       sessions.clear()

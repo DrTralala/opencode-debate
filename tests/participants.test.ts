@@ -118,6 +118,10 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
       max_rounds: 3,
       persist_transcripts: true,
     },
+    mini_debate: {
+      participant: "debate-kimi",
+      max_rounds: 3,
+    },
   })
 })
 
@@ -126,6 +130,7 @@ test("packaged compatibility exports are loaded from config.yaml", () => {
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-kimi"])
   assert.equal(DEBATE_PARTICIPANTS.length, 5)
+  assert.deepEqual(loadPackagedRegistry().miniDebate, { participant: "debate-kimi", maxRounds: 3 })
 })
 
 test("description and variant are optional source fields", () => {

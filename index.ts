@@ -1,6 +1,12 @@
-import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin"
+import type { Config, Hooks, Plugin, PluginModule } from "@opencode-ai/plugin"
 import { createAutomaticDebatePlugin } from "./src/auto-debate/plugin.ts"
 import { createDebatePlugin } from "./src/debate.ts"
+import {
+  createMiniDebateController,
+  mirrorParticipantTaskRestrictions,
+  type MiniDebateController,
+  type MiniDebateHost,
+} from "./src/mini-debate/plugin.ts"
 import {
   DEBATE_PARTICIPANTS,
   loadEffectiveRegistry,
@@ -351,6 +357,33 @@ export function coordinatorPermission(
   }
 }
 
+type CapturedConfigPermissions = {
+  permission: PermissionConfiguration | undefined
+  agents: Map<string, PermissionConfiguration | undefined>
+}
+
+const capturedConfigPermissions = new WeakMap<Config, CapturedConfigPermissions>()
+
+/**
+ * Capture the user-provided permission maps once per config object, before any
+ * hook in this plugin appends configured-participant denials or tool defaults.
+ */
+function captureConfigPermissions(config: Config): CapturedConfigPermissions {
+  const existing = capturedConfigPermissions.get(config)
+  if (existing !== undefined) return existing
+  const captured: CapturedConfigPermissions = {
+    permission: config.permission as PermissionConfiguration | undefined,
+    agents: new Map(
+      Object.entries(config.agent ?? {}).map(([name, agentConfig]) => [
+        name,
+        agentConfig?.permission as PermissionConfiguration | undefined,
+      ]),
+    ),
+  }
+  capturedConfigPermissions.set(config, captured)
+  return captured
+}
+
 type AsyncHook = (...args: any[]) => unknown
 
 function hookError(errors: unknown[], label: string): never {
@@ -371,7 +404,7 @@ function composeCallbacks<T extends AsyncHook>(label: string, callbacks: (T | un
   }) as T
 }
 
-function composePluginHooks(components: readonly Hooks[]): Hooks {
+export function composePluginHooks(components: readonly Hooks[]): Hooks {
   const output: Hooks = {}
   const tools: NonNullable<Hooks["tool"]> = {}
   for (const component of components) {
@@ -426,12 +459,27 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
     const debateHooks = await createDebatePlugin(registry)(input, options)
     const automaticDebateHooks = await createAutomaticDebatePlugin(registry)(input, options)
     const responseFormatterHooks = await ResponseFormatterPlugin(input, options)
-    const taskDispatchGuard = createTaskDispatchGuard()
+    let miniDebateController: MiniDebateController | undefined
+    const taskDispatchGuard = createTaskDispatchGuard({
+      beforeStart: (sessionID) => miniDebateController?.release(sessionID),
+    })
+    miniDebateController = createMiniDebateController(
+      registry,
+      {
+        client: input.client as unknown as MiniDebateHost["client"],
+        directory: input.directory,
+      },
+      { beforeStart: (sessionID) => taskDispatchGuard.release(sessionID) },
+    )
 
     const indexHooks: Hooks = {
       config: async (config) => {
+        const captured = captureConfigPermissions(config)
         config.permission = denyParticipantTasks(
-          config.permission as PermissionConfiguration | undefined,
+          mirrorParticipantTaskRestrictions(
+            captured.permission,
+            registry.participants,
+          ) as PermissionConfiguration | undefined,
           registry.participants,
         ) as typeof config.permission
         if (!config.agent) config.agent = {}
@@ -439,8 +487,14 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
 
         for (const [agentName, agentConfig] of Object.entries(config.agent)) {
           if (agentName === "debate" || agentConfig === undefined) continue
+          const userPermission = captured.agents.has(agentName)
+            ? captured.agents.get(agentName)
+            : agentConfig.permission as PermissionConfiguration | undefined
           agentConfig.permission = denyParticipantTasks(
-            agentConfig.permission as PermissionConfiguration | undefined,
+            mirrorParticipantTaskRestrictions(
+              userPermission,
+              registry.participants,
+            ) as PermissionConfiguration | undefined,
             registry.participants,
           ) as typeof agentConfig.permission
         }
@@ -472,7 +526,14 @@ export function createServer(loadRegistry: () => DebateRegistry = loadEffectiveR
         }
       },
     }
-    return composePluginHooks([debateHooks, indexHooks, automaticDebateHooks, responseFormatterHooks, taskDispatchGuard.hooks])
+    return composePluginHooks([
+      debateHooks,
+      indexHooks,
+      automaticDebateHooks,
+      responseFormatterHooks,
+      taskDispatchGuard.hooks,
+      miniDebateController.hooks,
+    ])
   }
 }
 

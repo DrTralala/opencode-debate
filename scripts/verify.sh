@@ -47,6 +47,7 @@ assert_not_line() {
 
 # Required files.
 assert_tracked ".opencode/commands/debate.md"
+assert_tracked ".opencode/commands/mini-debate.md"
 assert_tracked ".opencode/plugin/debate.ts"
 assert_tracked "index.ts"
 assert_present "config.yaml"
@@ -71,6 +72,11 @@ assert_tracked "src/participants.ts"
 assert_tracked "src/response-formatter.ts"
 assert_present "src/transcript-persistence.ts"
 assert_present "src/task-dispatch-guard.ts"
+assert_tracked "src/mini-debate/plugin.ts"
+assert_tracked "src/mini-debate/arguments.ts"
+assert_tracked "src/mini-debate/lifecycle.ts"
+assert_tracked "src/mini-debate/prompts.ts"
+assert_tracked "src/mini-debate/protocol.ts"
 assert_tracked "scripts/debate-participant-body.md"
 assert_tracked "scripts/gen-participants.ts"
 assert_tracked "scripts/generate_html.py"
@@ -120,6 +126,15 @@ assert_not_contains "README.md" 'missing user file silently uses packaged defaul
 assert_not_contains "README.md" 'GPT-5.6 Sol Pro'
 assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
 
+# Packaged defaults expose the mini-debate participant and round budget.
+assert_contains "config.yaml" "mini_debate:"
+assert_contains "config.yaml" "  participant: debate-kimi"
+assert_contains "README.md" '/mini-debate <topic>'
+assert_contains "README.md" "mini_debate:"
+assert_contains "README.md" "mirrored to its mini alias"
+assert_contains "README.md" "same child session"
+assert_contains "README.md" "A topic is mandatory."
+
 # Local-only artefacts must not be tracked.
 assert_not_tracked ".opencode/package.json"
 assert_not_tracked ".opencode/package-lock.json"
@@ -157,8 +172,14 @@ assert_not_contains ".github/workflows/publish.yml" "NODE_AUTH_TOKEN"
 
 # Command routes to the debate agent; plugin hooks the command lifecycle.
 assert_contains ".opencode/commands/debate.md" "agent: debate"
+assert_contains ".opencode/commands/mini-debate.md" '$ARGUMENTS'
+assert_not_contains ".opencode/commands/mini-debate.md" "agent:"
 assert_contains ".opencode/plugin/debate.ts" "../../src/debate.ts"
 assert_contains ".opencode/plugin/debate.ts" "../../src/task-dispatch-guard.ts"
+assert_contains ".opencode/plugin/debate.ts" "../../src/mini-debate/plugin.ts"
+assert_contains ".opencode/plugin/debate.ts" "createTaskDispatchGuard"
+assert_contains ".opencode/plugin/debate.ts" "createMiniDebateController"
+assert_not_contains ".opencode/plugin/debate.ts" "TaskDispatchGuardPlugin"
 assert_contains "src/debate.ts" "command.execute.before"
 assert_contains "src/debate.ts" "DebatePlugin"
 assert_contains "src/task-dispatch-guard.ts" "TaskDispatchGuardPlugin"

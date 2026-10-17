@@ -132,6 +132,34 @@ State is checkpointed in a native child session. After restart, in-flight work i
 
 Use **Ctrl+X, then Down** to enter a child, **Left / Right** or **Prev / Next** to cycle siblings, and **Up** or **Parent** to return. These are the [OpenCode 1.19.0 defaults](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/tui/src/config/keybind.ts); custom bindings may differ. Cycling includes other subagents and the checkpoint session. The `auto_debate` tool entry itself does not open a participant session.
 
+## Mini Debates
+
+Run a bounded debate with one neutral participant in the current session. The main agent stays active and debates directly; the plugin does not switch to the hidden three-participant coordinator.
+
+```text
+/mini-debate <topic>
+/mini-debate --participant:debate-openai --rounds 5 <topic>
+```
+
+A topic is mandatory. `--participant:<name>` selects an existing participant and `--rounds <number>` sets a budget from 1 to 10; both override the configuration below.
+
+Add this optional block to your complete [user configuration](#configuration), then restart OpenCode:
+
+```yaml
+mini_debate:
+  participant: debate-kimi
+  max_rounds: 3
+```
+
+| Setting | Behaviour |
+|---|---|
+| `participant` | Existing participant name. Omission uses the first member of the configured default set. It is independent of `auto_debate.set`. |
+| `max_rounds` | Integer from 1 to 10, default 3. Command flags override it. |
+
+Each completed participant response counts as one round. From round 2, the exchange stops early only when both the main agent and the participant report `consensus_reached` and `recommend_stopping` as `true`. At the reached round limit, at least one continuing recommendation opens a native question with finite extension choices; another round runs only after the user approves that question, and the participant resumes in the same child session. A one-round budget ends at its limit without claiming early consensus.
+
+Each invocation uses one native `task` child session. The task entry stays clickable, and the child is reachable with **Ctrl+X, then Down**; mini-debate writes no separate transcript files. Native task permissions still apply: an explicit denial for a participant name is mirrored to its mini alias, while an explicit alias rule is preserved. Ordinary agents and users keep their usual ask/deny behaviour.
+
 ## Participant Sets
 
 | Set | Participant 1 | Participant 2 | Participant 3 |
@@ -207,7 +235,7 @@ This runs repository contract checks, generated-agent and prompt drift detection
 | `index.ts` | Plugin entry point and agent registration |
 | `src/` | Configuration, manual debate, dispatch guards, and persistence |
 | `src/auto-debate/` | Automatic discussion lifecycle and native-session integration |
-| `.opencode/` | Project-local command, coordinator, and generated participant agents |
+| `.opencode/` | Project-local commands, coordinator, and generated participant agents |
 | `scripts/` | Agent generation, response validation, transcript publishing, and verification |
 | `tests/` | Behavioural and packaging regression tests |
 | `.github/workflows/` | CI verification and release-triggered npm publishing through OIDC |
