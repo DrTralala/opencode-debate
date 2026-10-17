@@ -34,8 +34,9 @@ sets:
       - debate-glm
       - debate-qwen
       - debate-kimi
-# Optional automatic-debate settings (these are also the parser defaults).
+# Optional automatic-debate settings. Omit set to use the configured default set.
 auto_debate:
   enabled: false
+  set: default
   max_rounds: 3
   persist_transcripts: true

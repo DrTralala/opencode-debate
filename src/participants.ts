@@ -85,7 +85,7 @@ export type ParticipantConfigPaths = {
 const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets", "auto_debate"])
 const PARTICIPANT_FIELDS = new Set(["description", "model", "variant"])
 const SET_FIELDS = new Set(["participants", "default", "continuation"])
-const AUTO_DEBATE_FIELDS = new Set(["enabled", "max_rounds", "persist_transcripts"])
+const AUTO_DEBATE_FIELDS = new Set(["enabled", "set", "max_rounds", "persist_transcripts"])
 const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.yaml", import.meta.url))
 
 function isMapping(value: unknown): value is Record<string, unknown> {
@@ -147,7 +147,8 @@ function parseAutoDebateConfig(value: unknown, configPath: string): AutoDebateCo
     invalid(configPath, "auto_debate.persist_transcripts", "expected a boolean")
   }
 
-  return { enabled, maxRounds, persistTranscripts }
+  const set = optionalNonEmptyString(value.set, configPath, "auto_debate.set")
+  return { enabled, maxRounds, persistTranscripts, ...(set === undefined ? {} : { set }) }
 }
 
 function readConfigSource(configPath: string): string {
@@ -284,6 +285,10 @@ export function parseParticipantConfig(source: string, configPath: string): Part
       markedDefault = setName
     }
     sets[setName] = parsedSet
+  }
+
+  if (autoDebate.set !== undefined && !Object.hasOwn(sets, autoDebate.set)) {
+    invalid(configPath, "auto_debate.set", `unknown set: ${autoDebate.set}`)
   }
 
   return {

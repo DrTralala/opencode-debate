@@ -107,6 +107,7 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
     },
     auto_debate: {
       enabled: false,
+      set: "default",
       max_rounds: 3,
       persist_transcripts: true,
     },
@@ -145,6 +146,32 @@ test("auto-debate config preserves explicit false values", () => {
     maxRounds: 3,
     persistTranscripts: false,
   })
+})
+
+test("auto-debate set selects an existing alternate without changing the manual default", () => {
+  const source = completeConfig(`
+  alpha:
+    default: yes
+    participants: [one, two, three]
+  alternate:
+    participants: [unused, two, one]
+`) + "auto_debate:\n  set: alternate\n"
+  const parsed = parseParticipantConfig(source, "/tmp/config.yaml")
+  assert.equal(parsed.autoDebate.set, "alternate")
+  assert.equal(parsed.defaultSet, "alpha")
+  withTempConfig(source, (path) => {
+    assert.equal(loadPackagedRegistry(path).autoDebate?.set, "alternate")
+  })
+})
+
+test("auto-debate set rejects empty and non-string values", () => {
+  for (const value of ['""', '"   "', "null", "true", "1", "[]", "{}"])
+    assertInvalidConfig(configWithAutoDebate(`  set: ${value}\n`), "auto_debate.set", /non-empty string/i)
+})
+
+test("auto-debate set rejects unknown names including inherited property names", () => {
+  for (const value of ["missing", "toString", "__proto__"])
+    assertInvalidConfig(configWithAutoDebate(`  set: ${value}\n`), "auto_debate.set", /unknown set/i)
 })
 
 test("auto-debate max rounds accepts the minimum and larger safe values", () => {

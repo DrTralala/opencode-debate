@@ -251,6 +251,44 @@ async function waitFor<T>(read: () => Promise<T>, predicate: (value: T) => boole
   throw new Error("Timed out waiting for automatic-debate state")
 }
 
+test("automatic set registers and starts only its private participants without changing manual sets", async () => {
+  const selected: DebateRegistry = {
+    ...enabledRegistry(),
+    participants: [...registry.participants,
+      { agent: "four", description: "Fourth", model: "fake/four", variant: "careful" }],
+    sets: { ...registry.sets, alternate: ["four", "two", "one"] },
+    autoDebate: { enabled: true, maxRounds: 3, persistTranscripts: false, set: "alternate" },
+  }
+  const fake = await makePlugin(selected)
+  fake.agents.push({ name: automaticParticipantAgentName("four"), mode: "subagent", permission: [] })
+  try {
+    const agents = fake.config.agent as Record<string, RecordValue>
+    assert.equal(agents[automaticParticipantAgentName("four")]?.model, "fake/four")
+    assert.equal(agents[automaticParticipantAgentName("four")]?.variant, "careful")
+    assert.equal(agents[automaticParticipantAgentName("three")], undefined)
+    const args = { action: "start", brief }
+    const context = currentNativeInvocation(fake, args)
+    await fake.hooks["tool.execute.before"]?.({ tool: "auto_debate", sessionID: ownerA.sessionID, callID: context.callID }, { args })
+    const result = JSON.parse(outputText(await fake.hooks.tool!.auto_debate.execute(args, context)))
+    await waitFor(async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: result.discussion.id }))),
+      (value) => value.discussion.status === "awaiting-evaluation")
+    assert.deepEqual(result.discussion.participants, ["four", "two", "one"])
+    const children = [...fake.sessions.values()].filter((session) => String(session.title).startsWith("Automatic debate participant:"))
+    assert.equal(children.length, 3)
+    for (const [index, name] of ["four", "two", "one"].entries()) {
+      assert.equal(children[index].parentID, ownerA.sessionID)
+      const history = fake.histories.get(String(children[index].id))!
+      const prompt = history.find((message) => (message.info as RecordValue).role === "user")!
+      assert.equal((prompt.info as RecordValue).agent, automaticParticipantAgentName(name))
+      if (name === "four") assert.deepEqual((prompt.info as RecordValue).model,
+        { providerID: "fake", modelID: "four", variant: "careful" })
+    }
+    assert.deepEqual(selected.sets.default, ["one", "two", "three"])
+    assert.deepEqual(selected.sets.alternate, ["four", "two", "one"])
+    assert.equal(selected.defaultSet, "default")
+  } finally { await fake.hooks.dispose?.() }
+})
+
 test("automatic debate is disabled by default and a start makes no participant or transcript work", async () => {
   const { hooks, participantCalls, calls } = await makePlugin()
   await assert.rejects(execute(hooks, { action: "start", brief }), /disabled/i)

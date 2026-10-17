@@ -70,9 +70,10 @@ export function automaticParticipantAgentName(agent: string): string {
 }
 
 function managerRegistry(registry: DebateRegistry): { registry: DebateRegistry; participants: DebateParticipant[] } {
-  const ids = registry.sets[registry.defaultSet]
+  const setName = registry.autoDebate?.set ?? registry.defaultSet
+  const ids = registry.sets[setName]
   if (!ids || ids.length !== 3 || new Set(ids).size !== 3) {
-    throw new Error("Default automatic-debate panel must contain three distinct participants")
+    throw new Error("Selected automatic-debate panel must contain three distinct participants")
   }
   const existing = new Set(registry.participants.map(({ agent }) => agent))
   if ([...existing].some((agent) => agent.startsWith(AUTOMATIC_PARTICIPANT_PREFIX))) {
@@ -80,7 +81,7 @@ function managerRegistry(registry: DebateRegistry): { registry: DebateRegistry; 
   }
   const participants = ids.map((id) => {
     const participant = registry.participants.find((value) => value.agent === id)
-    if (!participant) throw new Error(`Default automatic-debate participant is unavailable: ${id}`)
+    if (!participant) throw new Error(`Selected automatic-debate participant is unavailable: ${id}`)
     return { ...participant, agent: automaticParticipantAgentName(participant.agent) }
   })
   const names = participants.map(({ agent }) => agent)
@@ -91,7 +92,7 @@ function managerRegistry(registry: DebateRegistry): { registry: DebateRegistry; 
     registry: {
       ...registry,
       participants: [...registry.participants, ...participants],
-      sets: { ...registry.sets, [registry.defaultSet]: names },
+      sets: { ...registry.sets, [setName]: names },
     },
     participants,
   }

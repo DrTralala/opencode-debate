@@ -292,6 +292,51 @@ async function finishRound(
   await runtime.waitForSaves(owner, saves + calls.length + (final ? 1 : 0))
 }
 
+test("new automatic panels use the selected set or the custom-named default when omitted", async () => {
+  for (const set of ["alternate", undefined]) {
+    const runtime = new FakeRuntime()
+    const value: DebateRegistry = {
+      ...registry(),
+      participants: [...participants, { agent: "four", description: "Fourth", model: "provider/four", variant: "careful" }],
+      sets: { custom: ["one", "two", "three"], alternate: ["four", "two", "one"] },
+      defaultSet: "custom",
+      autoDebate: { enabled: true, maxRounds: 3, persistTranscripts: false, ...(set ? { set } : {}) },
+    }
+    const manager = createManager({ runtime, registry: value, canonicalise, checkpoint: async () => {}, id: () => "selected" })
+    try {
+      const discussion = await manager.start(owner, brief)
+      await completeTranscriptCycle(runtime, owner, discussion.id)
+      assert.deepEqual(discussion.panel.map((member) => member.participant.agent),
+        set ? ["four", "two", "one"] : ["one", "two", "three"])
+      if (set) assert.deepEqual(runtime.created[0].participant,
+        { agent: "four", description: "Fourth", model: "provider/four", variant: "careful" })
+      assert.equal(value.defaultSet, "custom")
+      assert.deepEqual(value.sets.custom, ["one", "two", "three"])
+    } finally { await manager.dispose() }
+  }
+})
+
+test("resuming an older discussion keeps its saved panel despite a different automatic set", async () => {
+  const runtime = new FakeRuntime()
+  const saved = pausedDiscussion("saved", "old")
+  runtime.states.set(owner.sessionID, { version: 1, discussions: [saved], outbox: [] })
+  const value: DebateRegistry = {
+    ...registry(),
+    sets: { default: ["one", "two", "three"], alternate: ["three", "two", "one"] },
+    autoDebate: { enabled: true, maxRounds: 3, persistTranscripts: false, set: "alternate" },
+  }
+  const manager = createManager({ runtime, registry: value, canonicalise, checkpoint: async () => {}, id: () => "unused" })
+  try {
+    await manager.recover(owner)
+    const resumed = await manager.resume(owner, saved.id, "Recheck the saved evidence.")
+    await runtime.waitForPrompts(3)
+    await finishRound(runtime, [0, 1, 2], (index) => answer(`saved-${index}`, { stop: true }), true)
+    assert.deepEqual(resumed.panel, saved.panel)
+    assert.deepEqual(runtime.promptCalls.map((call) => call.member.sessionID), ["old-0", "old-1", "old-2"])
+    assert.equal(runtime.created.length, 0)
+  } finally { await manager.dispose() }
+})
+
 test("start persists initial state and member IDs before prompts, then returns during two independent background panels", async () => {
   const runtime = new FakeRuntime()
   const canonicalised: string[] = []

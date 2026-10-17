@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v3.0.0](https://img.shields.io/badge/version-v3.0.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.0.0)
+[![Version: v3.1.0](https://img.shields.io/badge/version-v3.1.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.1.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -16,7 +16,7 @@ Run structured, multi-round debates in OpenCode with three neutral participant a
 - OpenCode 1.17.13 or later
 - Node.js 24.15.0 or later
 - Python 3.9 or later
-- Linux is required for transcript persistence; the safe descriptor publisher uses Linux directory descriptors and `/proc/self/fd` semantics. Other platforms fail closed.
+- Linux with `/proc/self/fd` support for transcript persistence; other platforms fail closed
 - Access to the providers used by your selected participant set
 
 ## Quick start
@@ -34,20 +34,9 @@ For project-only installation, add the npm package to `plugin` in the project's 
 
 For installation across all projects, add the same `plugin` entry to your global OpenCode configuration at `~/.config/opencode/opencode.json`.
 
-For a reproducible installation, pin the exact release:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "opencode-debate@3.0.0"
-  ]
-}
-```
-
 OpenCode installs and caches the npm package automatically. Do not run `npm install` in the consumer project. Restart OpenCode after changing the plugin specification.
 
-Before running a debate, consider that topics and workspace context read by participants can be sent to third-party model providers. Use only context that you are comfortable sharing with the providers in the selected set. Transcripts may contain sensitive information, so add `docs/debates/` to your project's `.gitignore` before use. Each round invokes three models, and extensions can increase provider usage and cost.
+Before use, review [Privacy and Cost](#privacy-and-cost) and add `docs/debates/` to your project's `.gitignore`. Topics and workspace context may be sent to third-party providers; each round invokes three models.
 
 Run a debate:
 
@@ -55,7 +44,7 @@ Run a debate:
 /debate compare two architecture options for this project
 ```
 
-The plugin entry point in `index.ts` registers `/debate`, the coordinator, and all participant agents at runtime. Consumer projects do not copy this repository's `.opencode/` files.
+The plugin registers commands and agents automatically; consumer projects do not copy this repository's `.opencode/` files.
 
 On success, the coordinator returns a final synthesis and prints the Markdown and HTML transcript paths under `docs/debates/`. If HTML generation fails, the Markdown transcript is retained and the failure is reported.
 
@@ -78,17 +67,12 @@ Restart OpenCode after changing plugin or agent files.
 
 ## How It Works
 
-1. `/debate` routes the request to a hidden coordinator agent.
-2. The plugin parses leading options, validates the request, and resolves the ordered participant set.
-3. Three neutral participant subagents answer the topic independently in round 1.
-4. In later rounds, each participant resumes its session, receives the other participants' latest turns, and refines its position.
-5. From round 2 onward, the debate stops early only when every participant reports consensus and recommends stopping. At the round limit, the selected set's continuation mode either uses the existing user Question flow (`ask`) or lets the coordinator ask, add one round, or synthesise (`discretion`). Every continuation Question includes one concise process-based rationale and the coordinator's neutral advisory recommendation. If the recommendation is a fixed choice, exactly that matching fixed option is marked `(Recommended)` and no other fixed option is; if it is a custom positive count, no fixed option is marked and the exact count is stated without inventing a fourth option. The user still chooses among the fixed options or enters a custom numeric value, and Questions contain no substantive coordinator arguments, new research, or topic conclusions.
-6. The coordinator returns a final synthesis and calls the coordinator-only persistence tool, which validates and atomically writes the canonical date-only Markdown transcript before generating matching HTML from that exact path.
-7. The dispatch guard registers each valid rewritten debate command, binds all three resolved participant types before accepting tasks, rejects unmarked, duplicate, wrong-agent, and wrong-round dispatches, and resets stale state only when no dispatch is in flight. A fresh command cannot reset an in-flight debate.
+1. `/debate` validates the options and starts a hidden coordinator with the selected three-participant panel.
+2. Participants answer independently in round 1, then review each other's responses in their existing sessions.
+3. From round 2, unanimous consensus and stop recommendations end the debate early. Otherwise, the selected set's continuation mode governs extensions at the round limit.
+4. The coordinator returns a synthesis and saves Markdown and HTML transcripts. Participant turns remain in child sessions and transcripts.
 
-Before storing or forwarding any participant response, the coordinator calls the coordinator-only `format_debate_response` custom tool with the `round1` schema for round 1 and `round2` thereafter. The formatter requires the exact schema, preserves participant field values, and returns canonical JSON. Raw responses are never stored or forwarded. Syntax errors may receive syntax-preserving repairs and are retried until formatting succeeds; semantic or schema errors are sent to the resumed participant with the exact diagnostic and retried until valid. Failed formatting attempts are recorded under `## JSON Parsing Problems` in the transcript. The response-formatting and transcript-persistence tools are denied globally and to participant agents, and allowed only for the hidden coordinator.
-
-Participant turns stay in their subagent sessions and transcripts; the main session receives the final synthesis.
+Responses are schema-validated before forwarding or storage; invalid responses are corrected and validation failures are recorded. Dispatch guards reject duplicate, wrong-agent, and wrong-round tasks. Formatting and persistence tools are restricted to the coordinator.
 
 ## Usage
 
@@ -111,40 +95,42 @@ Invalid options produce an error without starting participant subagents.
 
 ## Automatic Debates
 
-Automatic-debate support is included in v3.0.0 and disabled by default.
+Disabled by default. When enabled, a visible main agent can consult a three-participant panel for decisions with material uncertainty. It evaluates the findings before acting or requesting another cycle; consensus is not proof of correctness.
 
-Automatic debate lets an eligible visible main agent consult the configured three-participant neutral panel when a decision still has material uncertainty. The main agent owns the brief, starts and evaluates each discussion, and decides whether to act, investigate, report unresolved uncertainty, or continue. Consensus is not proof that a conclusion is correct.
-
-Add this top-level block to the complete version 2 user configuration described under [Configuration](#configuration); it does not replace the required participant and set entries:
+Add this optional block to your complete [user configuration](#configuration), then restart OpenCode:
 
 ```yaml
 auto_debate:
   enabled: false
+  set: default
   max_rounds: 3
   persist_transcripts: true
 ```
 
-`max_rounds` is an integer of at least 3 and applies to each cycle, not the entire discussion. A new discussion can stop after round 2 when every participant recommends stopping; an evaluated follow-up can stop after its first round under the same rule. There is no overall cycle, time, or spending cap. Platform and provider limits still apply, and each round uses the three configured participant models.
+| Setting | Behaviour |
+|---|---|
+| `enabled` | Default for new conversations; session controls below override it. |
+| `set` | Existing set name, such as `default` or `cheap`. Omission uses the configured default. Invalid names are rejected. New in v3.1.0; manual `/debate` selection and saved panels are unchanged. |
+| `max_rounds` | Integer ≥3, per cycle. Unanimous stop votes can end a new discussion after round 2, or a follow-up after round 1. No overall cycle, time, or spending cap. |
+| `persist_transcripts` | Save Markdown to `docs/debates/auto-<discussion-id>.md` (no HTML). Disabling it does not disable session or provider retention. |
 
-Edit the user configuration at `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml`. Configuration is loaded when the plugin initialises, so restart OpenCode after changing it. Conversation controls take effect immediately and do not rewrite YAML:
+Conversation controls take effect immediately without rewriting YAML:
 
-```text
-/debate-auto on
-/debate-auto status
-/debate-auto off
-/debate-auto stop <discussion-id|all>
-/debate-auto reset
-```
+| Command | Effect |
+|---|---|
+| `/debate-auto on` | Allow new discussions; does not start one itself. |
+| `/debate-auto status` | Check current state and discussions. |
+| `/debate-auto off` | Block new discussions; existing work and evaluated continuations can proceed. |
+| `/debate-auto stop <discussion-id\|all>` | Cancel one or all discussions in this conversation; pending stops remain unconfirmed. |
+| `/debate-auto reset` | Return to the configured enablement default. |
 
-`on` enables new automatic discussions in this conversation; it does not start one by itself. Ask the main agent to consider a decision that has material uncertainty. It can continue independent work while discussions run in the background, but must wait for and evaluate findings before relying on them for dependent work. Materially changed facts or constraints must be given to the panel before its result is used.
+Participants cannot edit files or launch nested debates. Normal OpenCode permissions still apply; the tool's permission action patterns are `start`, `status`, `evaluate`, `resume`, and `cancel`.
 
-`off` prevents new discussions but does not stop existing work or an evaluated continuation. Use `stop <discussion-id>` to cancel one discussion explicitly, or `stop all` to stop every discussion owned by this conversation; other conversations are unaffected. Pending participant stops remain visibly unconfirmed. `reset` removes the conversation override and returns to the configured default. Only a visible main agent can manage automatic discussions; participants cannot start nested debates or change files. The feature does not grant additional tool, workspace, or external-service permissions: OpenCode's normal permission rules and prompts still apply. For `auto_debate` pattern-map permissions, the action patterns are `start`, `status`, `evaluate`, `resume`, and `cancel`; wildcard names and patterns retain native last-match ordering.
+State is checkpointed in a native child session. After restart, in-flight work is marked interrupted, not replayed. Resuming requires verified original sessions, a recorded evaluation, and focused feedback. If a background notification is missing, check status rather than assuming completion.
 
-Background result updates are reconciled against native session history. If delivery is uncertain, the plugin looks up the original attempt and does not resend it, avoiding duplicate notifications. If a persisted update cannot be confirmed, no notification is guaranteed; check `/debate-auto status` and the saved discussion, and evaluate its findings yourself.
+### Viewing participant sessions
 
-Persistent conversation state is stored as append-only checkpoint records in a native child session with a receipt journal, not as a dump in the main conversation. After a restart, in-flight work is marked interrupted rather than silently replayed. A paused discussion can continue only when its original participant sessions have durable continuation proof; unknown or unclosed starts are treated as interrupted. Continuation also requires a recorded main-agent evaluation and focused feedback.
-
-Separate records are saved by default as incrementally appended, framed Markdown under `docs/debates/auto-<discussion-id>.md`; automatic debates do not generate HTML transcripts. Records contain submitted briefs and participant responses, follow-ups, evaluations, and outcomes—not private internal reasoning. Transcript persistence requires Linux and `/proc/self/fd` descriptor support and fails closed when safe publication cannot be verified. Setting `persist_transcripts: false` disables these separate files only; it does not disable OpenCode session-history retention or provider-side retention. Transcripts can contain project information, so protect `docs/debates/` in the consumer project's `.gitignore`.
+Use **Ctrl+X, then Down** to enter a child, **Left / Right** or **Prev / Next** to cycle siblings, and **Up** or **Parent** to return. These are the [OpenCode 1.19.0 defaults](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/tui/src/config/keybind.ts); custom bindings may differ. Cycling includes other subagents and the checkpoint session. The `auto_debate` tool entry itself does not open a participant session.
 
 ## Participant Sets
 
@@ -155,17 +141,15 @@ Separate records are saved by default as incrementally appended, framed Markdown
 
 ## Configuration
 
-[`config.yaml`](config.yaml) is the source of every participant and set shipped by the package. On each plugin initialisation, opencode-debate resolves this user path:
+Edit the user configuration at:
 
 ```text
 ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml
 ```
 
-When `XDG_CONFIG_HOME` is set, the path is `$XDG_CONFIG_HOME/opencode/opencode-debate/config.yaml`; otherwise it is `~/.config/opencode/opencode-debate/config.yaml`. If the file does not exist, the plugin atomically creates it as an exact copy of the packaged file. If it already exists, the plugin never rewrites or merges it.
+If missing, the plugin atomically creates it as an exact copy of the packaged [`config.yaml`](config.yaml). Existing files are never merged or rewritten, including on upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
 
-The user file is a complete, authoritative version 2 configuration. Removing a participant or set keeps it removed, including after package upgrades. Existing version 1 files and former partial overlays are rejected; convert them to a complete version 2 file, or delete them to regenerate the packaged template on the next initialisation.
-
-A complete minimal file has this shape:
+Minimal example:
 
 ```yaml
 version: 2
@@ -182,19 +166,13 @@ sets:
     participants: [alpha, beta, gamma]
 ```
 
-A participant requires a non-empty `model`. `description` and `variant` are optional non-empty strings. Without a description, the plugin uses `Neutral debate participant using <model>`; without a variant, the OpenCode agent configuration omits that field. Participants may be unused by every set and are still registered.
+- **Participants:** require a non-empty `model`; `description` and `variant` are optional non-empty strings. Provider availability and variants may change independently.
+- **Sets:** exactly three distinct declared participants. Mark at most one with `default: yes`; otherwise the first set in YAML source order is used. No literal `default` name is required.
+- **Manual continuation:** `continuation: ask` (default) asks about extending when participants recommend it; `discretion` lets the coordinator ask, add one round, or synthesise. Questions offer 1 or 3 more rounds, stopping, or a custom count. Extensions have no hard cap.
+- **Validation:** duplicate keys, unknown fields or references, and malformed entries stop initialisation with a file/field error; there is no silent fallback.
+- **Reload:** quit and restart OpenCode after edits. Maintainers changing participant definitions also run `node scripts/gen-participants.ts`.
 
-Every set is a mapping whose `participants` array contains exactly three distinct declared participant IDs. The optional `default: yes` marker may appear on at most one set, and only the parsed string `yes` is valid. When no marker is present, the first set in YAML source order is selected. No set name is reserved, so a set named `default` is not required. The command's default rounds are 3; `--rounds` remains the override.
-
-Each set may specify `continuation: ask` or `continuation: discretion`; omission defaults to `ask`. In `ask` mode, when the configured limit is reached without the early-stop condition and at least one participant recommends continuing, the coordinator asks the user whether to run `1 more round`, `3 more rounds`, or `Stop and synthesise now`. Each continuation Question includes one concise process-based rationale and the coordinator's neutral advisory recommendation. For a fixed recommendation, `(Recommended)` appears on exactly the matching fixed option and no other; for a custom positive recommendation, no fixed option is marked, the exact count is stated, and no fourth option is invented. A custom numeric answer grants that many additional rounds; a non-numeric answer proceeds to synthesis. In `discretion` mode, the coordinator chooses among asking the user, one autonomous extra round, or synthesis using participant guidance and debate quality; discretion-mode Questions, including the no-unanimous-consensus case where all participants recommend stopping, use the same rationale, recommendation, option-marking, and custom-count policy. The user still chooses among fixed options or enters a custom numeric value, and Questions contain no substantive coordinator arguments, new research, or topic conclusions. The decision is revisited after each extension and there is no hard extension cap. Three false `consensus_reached` values are guidance only; they do not automatically stop or extend a debate.
-
-Duplicate YAML keys, unknown fields, unsupported versions, incomplete participants, malformed sets, and unknown participant references stop plugin initialisation. Errors identify the absolute file and field path; creation and read errors also report the filesystem operation and cause. There is no implicit in-memory fallback.
-
-Normal agents are denied Task access to the configured debate participants; only the hidden debate coordinator receives exact Task allows for them. Hiding removes participant autocomplete visibility, but OpenCode still lets a user invoke an exact participant name manually with `@name`. This is not a security boundary.
-
-Configuration is loaded once. After editing or deleting the user file, quit and restart OpenCode. Maintainers changing the packaged file should also run `node scripts/gen-participants.ts` to update the project-local generated agents before restarting.
-
-Provider availability and supported variants can change independently of this repository.
+Only the hidden coordinator has Task access to manual debate participants. Hidden agents are not a security boundary: users can still invoke an exact participant name manually with `@name`.
 
 ## Privacy and Cost
 
@@ -204,22 +182,14 @@ Provider availability and supported variants can change independently of this re
 
 ## Transcripts
 
-Each completed debate writes:
+Each completed manual debate writes:
 
 - `docs/debates/YYYY-MM-DD-<slug>.md`
 - `docs/debates/YYYY-MM-DD-<slug>.html`
 
-Markdown is canonical. The coordinator-only `persist_debate_transcript` tool computes the UTC date, validates the canonical Markdown before creating files, atomically claims the base name (then `-2`, `-3`, and later suffixes for collisions), and invokes `scripts/generate_html.py` with the exact claimed Markdown path plus a descriptor identity token. Publication and exact-path HTML generation use Linux no-follow directory descriptors and fail closed if the canonical directory identity changes. Participant turns, extension decisions, JSON parsing notes, and final synthesis render as sanitized Markdown; Consensus and Stop badges appear below each completed round. If HTML generation fails, the Markdown transcript is retained and the concise failure is reported. The transcript files still require normal local-data protection.
+Markdown is canonical; HTML is generated from that same file with sanitised content. Publication is atomic, avoids overwriting existing transcripts, and fails closed on unsafe paths. If HTML generation fails, Markdown is retained. Regenerate HTML rather than editing it directly.
 
-The Markdown topic metadata uses matching tokenised markers so multiline topics are preserved verbatim, including blank lines and Markdown-like content:
-
-```markdown
-**Topic:** <!-- BEGIN TOPIC <token> -->
-<topic copied verbatim, including line breaks>
-<!-- END TOPIC <token> -->
-```
-
-The request's token is retained for the matching markers. Do not edit the generated HTML directly; regenerate it from the canonical Markdown. The persistence tool accepts only lowercase kebab-case slugs and retains `--latest` only as a backwards-compatible generator CLI option.
+Automatic debates save Markdown only, under `docs/debates/auto-<discussion-id>.md`. Records contain submitted briefs, responses, evaluations, and outcomes—not private internal reasoning.
 
 ## Verification
 
@@ -233,29 +203,14 @@ This runs repository contract checks, generated-agent and prompt drift detection
 
 | Path | Purpose |
 |---|---|
-| `package.json` | npm package metadata, runtime dependencies, and release scripts |
-| `config.yaml` | Packaged participant metadata and participant-set ordering |
-| `index.ts` | npm plugin entry point and runtime agent registration |
-| `.opencode/commands/debate.md` | Routes `/debate` to the project-local coordinator |
-| `.opencode/agents/debate.md` | Defines project-local orchestration, stopping, synthesis, and transcripts |
-| `.opencode/agents/debate-*.md` | Generated project-local participant definitions |
-| `.opencode/plugin/debate.ts` | Loads the project-local plugin bridge |
-| `src/debate.ts` | Parses options and builds canonical debate requests |
-| `src/response-formatter.ts` | Registers the coordinator-only response-formatting tool and runs the packaged validator |
-| `src/task-dispatch-guard.ts` | Guards coordinator participant dispatches by resolved type, purpose, round, and session lifecycle |
-| `src/transcript-persistence.ts` | Registers coordinator-only, date-only, collision-safe transcript persistence |
-| `src/participants.ts` | Creates, loads, validates, and normalises authoritative participant YAML |
-| `scripts/debate-participant-body.md` | Shared participant instructions |
-| `scripts/gen-participants.ts` | Generates participant agent files |
-| `scripts/format_response.py` | Strictly validates and canonicalises participant JSON responses |
-| `scripts/generate_html.py` | Parses Markdown transcripts and atomically generates HTML |
-| `scripts/publish_transcript.py` | Publishes Markdown through Linux trusted directory descriptors without symlink races |
-| `scripts/render_markdown.mjs` | Renders and sanitizes narrative Markdown for HTML transcripts |
-| `scripts/check_package.mjs` | Verifies the exact npm package contents |
-| `scripts/verify.sh` | Runs local and CI validation |
-| `.github/workflows/verify.yml` | Verifies pushes and pull requests |
-| `.github/workflows/publish.yml` | Publishes stable GitHub Releases to npm through OIDC |
-| `tests/` | Python, TypeScript, JavaScript, package, and workflow regression tests |
+| `config.yaml` | Packaged participant and set definitions |
+| `index.ts` | Plugin entry point and agent registration |
+| `src/` | Configuration, manual debate, dispatch guards, and persistence |
+| `src/auto-debate/` | Automatic discussion lifecycle and native-session integration |
+| `.opencode/` | Project-local command, coordinator, and generated participant agents |
+| `scripts/` | Agent generation, response validation, transcript publishing, and verification |
+| `tests/` | Behavioural and packaging regression tests |
+| `.github/workflows/` | CI verification and release-triggered npm publishing through OIDC |
 
 ## License
 

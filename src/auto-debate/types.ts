@@ -2,6 +2,7 @@ import type { DebateParticipant } from "../participants.ts"
 
 export type AutoDebateConfig = Readonly<{
   enabled: boolean
+  set?: string
   maxRounds: number
   persistTranscripts: boolean
 }>

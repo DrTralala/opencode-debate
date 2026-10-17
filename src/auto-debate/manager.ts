@@ -279,11 +279,12 @@ export function createManager(options: ManagerOptions): Manager {
   }
 
   function panelSnapshot(): PanelMember["participant"][] {
-    const set = options.registry.sets[options.registry.defaultSet]
-    if (!set || set.length !== 3 || new Set(set).size !== 3) throw new Error("Default automatic-debate panel must contain three distinct participants")
+    const setName = options.registry.autoDebate?.set ?? options.registry.defaultSet
+    const set = options.registry.sets[setName]
+    if (!set || set.length !== 3 || new Set(set).size !== 3) throw new Error("Selected automatic-debate panel must contain three distinct participants")
     return set.map((id) => {
       const participant = options.registry.participants.find((candidate) => candidate.agent === id)
-      if (!participant) throw new Error(`Default automatic-debate participant is unavailable: ${id}`)
+      if (!participant) throw new Error(`Selected automatic-debate participant is unavailable: ${id}`)
       return structuredClone(participant)
     })
   }
