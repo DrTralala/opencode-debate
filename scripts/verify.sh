@@ -292,7 +292,10 @@ assert_contains "config.yaml" "  cheap:"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to generate transcript HTML"
 python3 -m unittest discover -s tests -p 'test_*.py' || fail "Python test suite failed"
 
-test_output=$(node --test tests/*.test.ts tests/*.test.mjs 2>&1) || fail "test suite failed (run 'npm test' for details)"
+test_output=$(node --test tests/*.test.ts tests/*.test.mjs 2>&1) || {
+  printf '%s\n' "$test_output" >&2
+  fail "test suite failed (run 'npm test' for details)"
+}
 printf '%s\n' "$test_output" | grep -Fq "MODULE_TYPELESS_PACKAGE_JSON" && fail "test suite emitted MODULE_TYPELESS_PACKAGE_JSON warning"
 
 npm run pack:check || fail "npm package contents are incorrect"

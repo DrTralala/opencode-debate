@@ -712,6 +712,7 @@ test("HTML generation is invoked with the exact claimed path rather than --lates
   writeFileSync(
     bin,
     `#!/bin/sh
+cat >/dev/null
 printf '%s\n' "$@" > "${argumentsPath}"
 if [ "$2" = "--validate-stdin" ]; then exit 0; fi
 exit 0
@@ -751,7 +752,7 @@ test("HTML generation failure preserves Markdown and reports a concise failure",
   mkdirSync(directory, { recursive: true })
   writeFileSync(
     bin,
-    "#!/bin/sh\nif [ \"$2\" = \"--validate-stdin\" ]; then exit 0; fi\nprintf '%s\\n' 'renderer unavailable' >&2\nexit 7\n",
+    "#!/bin/sh\ncat >/dev/null\nif [ \"$2\" = \"--validate-stdin\" ]; then exit 0; fi\nprintf '%s\\n' 'renderer unavailable' >&2\nexit 7\n",
   )
   chmodSync(bin, 0o755)
   try {

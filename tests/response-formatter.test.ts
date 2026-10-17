@@ -96,7 +96,7 @@ test("formatter wrapper invokes python3 directly without a shell", (t) => {
   const marker = join(root, "shell-injected")
   mkdirSync(bin)
   const fakePython = join(bin, "python3")
-  writeFileSync(fakePython, "#!/bin/sh\nprintf '%s\\n' '{\"turn\": \"safe\"}'\n")
+  writeFileSync(fakePython, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"turn\": \"safe\"}'\n")
   chmodSync(fakePython, 0o755)
   const dangerousModuleUrl = pathToFileURL(
     join(root, "plugin;touch${IFS}$FORMATTER_MARKER;#", "src", "response-formatter.ts"),
