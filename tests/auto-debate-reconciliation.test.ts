@@ -19,7 +19,7 @@ function discussion(f: ReturnType<typeof checkpointClient>): Discussion {
 }
 async function setup(delivery = false) {
   const f = checkpointClient()
-  const runtime = createRuntime(f.input)
+  const runtime = createRuntime(f.input, { storage: "native" })
   const d = discussion(f)
   const state: ConversationState = { version: 1, override: false, discussions: [d], outbox: [] }
   if (delivery) {
@@ -60,7 +60,7 @@ test("lost owner delivery response reconciles exact content and survives restart
   f.session.promptAsync = async (request) => { await send(request); throw new Error("lost response") }
   const result = await f.runtime.deliver(f.owner, batch)
   assert.equal(result.state, "persisted")
-  const recovered = createRuntime(f.input)
+  const recovered = createRuntime(f.input, { storage: "native" })
   await recovered.load(f.owner)
   assert.deepEqual(await recovered.reconcileDeliveries(f.owner), [result])
   assert.deepEqual(await recovered.deliver(f.owner, batch), result)
@@ -79,7 +79,7 @@ test("an invisible async fork remains uncertain across restart and duplicate bat
   f.session.promptAsync = async (value) => { sends++; request = value; throw new Error("accepted but response lost") }
   const result = await f.runtime.deliver(f.owner, batch)
   assert.equal(result.state, "uncertain")
-  const recovered = createRuntime(f.input)
+  const recovered = createRuntime(f.input, { storage: "native" })
   await recovered.load(f.owner)
   assert.equal((await recovered.reconcileDeliveries(f.owner))[0].state, "uncertain")
   assert.equal((await recovered.deliver(f.owner, batch)).state, "uncertain")
@@ -97,7 +97,7 @@ test("busy owner preserves intent-only proof and a busy race produces a durable 
   const intent = await f.runtime.deliver(f.owner, batch)
   assert.equal(intent.state, "not-dispatched")
   assert.equal(intent.state === "not-dispatched" && intent.proof, "intent-only")
-  const recovered = createRuntime(f.input)
+  const recovered = createRuntime(f.input, { storage: "native" })
   await recovered.load(f.owner)
   assert.deepEqual(await recovered.reconcileDeliveries(f.owner), [intent])
   delete f.statuses[f.owner.sessionID]
@@ -123,7 +123,7 @@ test("proof-backed paused panel explicitly continues on the same sessions while 
   f.d.results.push({ cycle: 1, rounds: 2, status: "complete", reason: "unanimous-stop", turns: [], failures: [], consensus: true })
   f.d.evaluations.push({ cycle: 1, conclusion: "Continue", caveats: [], rationale: "New context", next: "continue" })
   await f.runtime.save(f.owner, f.state)
-  const recovered = createRuntime(f.input)
+  const recovered = createRuntime(f.input, { storage: "native" })
   const state = (await recovered.load(f.owner))!
   const ids = state.discussions[0].panel.map((member) => member.sessionID)
   const before = f.modelCalls()
@@ -155,7 +155,7 @@ test("lost participant startup cannot be adopted from idle, final-looking histor
   f.d.status = "interrupted"
   f.d.cancellation = { pendingSessionIDs: [member.sessionID], errors: ["startup unconfirmed"] }
   await f.runtime.save(f.owner, f.state)
-  const recovered = createRuntime(f.input)
+  const recovered = createRuntime(f.input, { storage: "native" })
   await recovered.load(f.owner)
   const inspected = await recovered.reconcileParticipant(f.owner, member)
   assert.ok(inspected.state === "uncertain" || (inspected.state === "fenced" && inspected.cessation === "unconfirmed"))
@@ -186,7 +186,7 @@ test("manager snapshots serialize with runtime closure receipts without dropping
   for (let index = 1; index < entries.length; index++) assert.deepEqual(entries[index].slice(0, entries[index - 1].length), entries[index - 1])
   assert.deepEqual(f.histories.get(f.owner.sessionID) ?? [], [])
   assert.deepEqual(f.sessions.get(f.owner.sessionID)!.metadata, { unrelated: { retained: true } })
-  assert.equal((await createRuntime(f.input).load(f.owner))!.override, false)
+  assert.equal((await createRuntime(f.input, { storage: "native" }).load(f.owner))!.override, false)
 })
 
 test("checksum-valid removal or forgery of a receipt prefix fails recovery rather than adopting a safe-looking snapshot", async () => {
@@ -201,7 +201,7 @@ test("checksum-valid removal or forgery of a receipt prefix fails recovery rathe
       else proof.entries.push({ kind: "participant-start-closed", sessionID: f.d.panel[0].sessionID,
         messageID: "msg_unowned", startup: "synchronous-response", outcome: "answer", assistantID: "msg_fake" })
     })
-    const recovered = createRuntime(f.input)
+    const recovered = createRuntime(f.input, { storage: "native" })
     await assert.rejects(recovered.load(f.owner), /receipt|proof|prefix|start|journal/i)
     await assert.rejects(recovered.save(f.owner, f.state), /unconfirmed|receipt|proof|journal|checkpoint/i)
   }
@@ -246,7 +246,7 @@ test("optional manager delivery uncertainty survives checkpoint validation and r
   f.d.deliveryUncertainCycles = [{ cycle: 1, reason: "Native result lookup remains uncertain" }]
   await f.runtime.save(f.owner, f.state)
 
-  const recovered = createRuntime(f.input)
+  const recovered = createRuntime(f.input, { storage: "native" })
   const state = await recovered.load(f.owner)
   assert.deepEqual(state?.discussions[0].deliveryUncertainCycles, f.d.deliveryUncertainCycles)
 })
@@ -271,7 +271,7 @@ test("stop during receipt persistence confirms a definitely never invoked partic
   release.release()
   await Promise.all([rejected, stopped])
   assert.equal(f.calls.some((call) => call.method === "prompt" && call.id === member.sessionID), false)
-  const restored = createRuntime(f.input)
+  const restored = createRuntime(f.input, { storage: "native" })
   await restored.load(f.owner)
   assert.deepEqual(await restored.reconcileParticipant(f.owner, member), { sessionID: member.sessionID, state: "fenced", cessation: "confirmed" })
   await assert.rejects(restored.prompt(member, "must stay fenced"), /stopp|cancel/i)
@@ -292,7 +292,7 @@ test("completion without a durably acknowledged close cannot authorise paused re
   }
   await assert.rejects(f.runtime.prompt(f.d.panel[0], "completed remotely"), /terminal receipt lost/)
   f.session.prompt = prompt
-  const restored = createRuntime(f.input)
+  const restored = createRuntime(f.input, { storage: "native" })
   await restored.load(f.owner)
   assert.equal((await restored.reconcileParticipant(f.owner, f.d.panel[0])).state, "uncertain")
   await assert.rejects(restored.prompt(f.d.panel[0], "final history is not starter proof"), /stopp|provenance|uncertain/i)
@@ -309,10 +309,10 @@ test("reconciliation fails closed when a previously loaded checkpoint chain acqu
 test("pre-protocol outbox ambiguity cannot be promoted to intent-only by an ordinary manager save", async () => {
   const f = await setup(true)
   rewrite(records(f)[0], (value) => { delete value.runtimeProof })
-  const upgraded = createRuntime(f.input)
+  const upgraded = createRuntime(f.input, { storage: "native" })
   await upgraded.load(f.owner)
   await upgraded.save(f.owner, f.state)
-  const restored = createRuntime(f.input)
+  const restored = createRuntime(f.input, { storage: "native" })
   await restored.load(f.owner)
   await assert.rejects(restored.deliver(f.owner, batch), /legacy|provenance|unknown/i)
   assert.equal(f.calls.some((call) => call.method === "promptAsync"), false)
@@ -328,7 +328,7 @@ test("a checksum-valid widened native participant permission list never authoris
   await f.runtime.save(f.owner, f.state)
   const member = f.d.panel[0]
   f.sessions.get(member.sessionID)!.permission = [{ permission: "*", pattern: "*", action: "allow" }]
-  const restored = createRuntime(f.input)
+  const restored = createRuntime(f.input, { storage: "native" })
   await restored.load(f.owner)
   const observation = await restored.reconcileParticipant(f.owner, member)
   assert.equal(observation.state, "uncertain")
@@ -341,7 +341,7 @@ test("changing the root primary agent cannot transfer another agent's checkpoint
   f.sessions.get(f.owner.sessionID)!.agent = "plan"
   const client = f.input.client as unknown as { app: { agents: () => Promise<unknown> } }
   client.app.agents = async () => ({ data: ["build", "plan"].map((name) => ({ name, mode: "primary", permission: [] })) })
-  const restored = createRuntime(f.input)
+  const restored = createRuntime(f.input, { storage: "native" })
   await assert.rejects(restored.load({ ...f.owner, agent: "plan" }), /owner|agent|binding/i)
 })
 
@@ -398,7 +398,7 @@ for (const scenario of [
     assert.equal(f.calls.filter((call) => call.method === "prompt" && f.d.panel.some((member) => member.sessionID === call.id)).length, 0)
     if (scenario.failure === "lost-response") {
       await assert.rejects(f.runtime.load(f.owner), /unconfirmed|checkpoint/i)
-      const recovered = createRuntime(f.input)
+      const recovered = createRuntime(f.input, { storage: "native" })
       assert.deepEqual((await recovered.load(f.owner))!.discussions[0].panel, f.d.panel)
       for (const member of f.d.panel) assert.deepEqual(await recovered.reconcileParticipant(f.owner, member),
         { sessionID: member.sessionID, state: "exhausted", canContinue: false })

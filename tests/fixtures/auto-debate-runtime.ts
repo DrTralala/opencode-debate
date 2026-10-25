@@ -68,6 +68,12 @@ type Observation = {
 }
 
 type ProbeResult = { observation: Observation; version: string }
+
+export const REVIEWED_NATIVE_VERSIONS = ["1.18.35", "1.19.4"] as const
+
+export function isReviewedNativeVersion(version: string): boolean {
+  return (REVIEWED_NATIVE_VERSIONS as readonly string[]).includes(version)
+}
 type NativeEvent = {
   type: string
   sessionID?: string
@@ -344,7 +350,7 @@ function record(entry) {
 }
 export default async function RuntimeProbePlugin(input) {
   record({ type: "runtime-probe-plugin-loaded" });
-  const runtime = createRuntime(input);
+  const runtime = createRuntime(input, { storage: "native" });
   return {
     "chat.message": async ({ sessionID }, { parts }) => {
       const text = parts.filter((part) => part.type === "text").map((part) => part.text).join("\\n");
@@ -942,7 +948,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       encoding: "utf8",
       timeout: 10_000,
     }).trim()
-    if (version !== "1.18.35") throw new Error(`Unreviewed native runtime version: ${version}`)
+    if (!isReviewedNativeVersion(version)) throw new Error(`Unreviewed native runtime version: ${version}`)
 
     stage = "native server startup"
     nativeProcess = await startServer(binary, projectDirectory, serverPort, environment, nativeDiagnostics)
@@ -995,7 +1001,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       serverUrl: new URL(baseURL),
       $: undefined,
     } as unknown as PluginInput
-    const runtime = createRuntime(pluginInput)
+    const runtime = createRuntime(pluginInput, { storage: "native" })
     const owner: Owner = {
       sessionID: rootSession.id,
       agent: "build",
@@ -1300,7 +1306,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       return { sessionID: root.id, agent: "build", directory: projectDirectory } as Owner
     }
     const proofOwner = await createProofOwner("Receipt-backed complete paused native cycle")
-    const proofRuntime = createRuntime(pluginInput)
+    const proofRuntime = createRuntime(pluginInput, { storage: "native" })
     const proofDiscussion: Discussion = { ...structuredClone(state.discussions[0]), id: "proof-discussion", owner: proofOwner,
       status: "running", panel: [], results: [], evaluations: [], followups: [] }
     const proofState: ConversationState = { version: 1, override: true, discussions: [proofDiscussion], outbox: [] }
@@ -1361,7 +1367,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       await pauseProof(adapter, current)
       return sameIDs && followed && answers.length === 3 && nativeUsers.every((history) => history.length === discussion.cycle + 1)
     }
-    const writerRestart = createRuntime(pluginInput)
+    const writerRestart = createRuntime(pluginInput, { storage: "native" })
     const writerState = (await writerRestart.load(proofOwner))!
     const pausedPanelContinuedAfterWriterRestart = await continueProof(writerRestart, writerState, "writer restart changed context")
     const proofMessages = await nativeMessages(client, projectDirectory, proofStore.id)
@@ -1380,7 +1386,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
 
     stage = "held native notification fork with lost response and writer restart"
     const notifyOwner = await createProofOwner("Held async delivery reconciliation")
-    const notifyRuntime = createRuntime(pluginInput)
+    const notifyRuntime = createRuntime(pluginInput, { storage: "native" })
     const notifyState: ConversationState = { version: 1, discussions: [{ ...structuredClone(proofDiscussion), id: "notification-discussion",
       owner: notifyOwner, panel: [], pendingTurns: [], cycle: 1, results: [{ cycle: 1, rounds: 2, status: "complete", reason: "unanimous-stop",
         turns: [], failures: [], consensus: false }], evaluations: [], followups: [], status: "awaiting-evaluation" }], outbox: [
@@ -1403,7 +1409,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
     const ambiguous = await notifyRuntime.deliver(notifyOwner, batch)
     const nativeHeld = providerObservations.startups.find((entry) => entry.kind === "delivery" && entry.sessionID === notifyOwner.sessionID)
     const noMessage = (await nativeMessages(client, projectDirectory, notifyOwner.sessionID)).length === 0
-    const deliveryRestart = createRuntime(pluginInput)
+    const deliveryRestart = createRuntime(pluginInput, { storage: "native" })
     await deliveryRestart.load(notifyOwner)
     const beforeRelease = await deliveryRestart.reconcileDeliveries(notifyOwner)
     const duplicates = await Promise.all([deliveryRestart.deliver(notifyOwner, batch), deliveryRestart.deliver(notifyOwner, batch)])
@@ -1453,7 +1459,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       serverUrl: new URL(baseURL),
       $: undefined,
     } as unknown as PluginInput
-    const restartedRuntime = createRuntime(restartedInput)
+    const restartedRuntime = createRuntime(restartedInput, { storage: "native" })
     const stateAfterRestart = await waitFor("persisted runtime state after server restart", async () => {
       try {
         const state = await restartedRuntime.load(owner)
@@ -1486,7 +1492,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       && metadataBeforeRecord.unrelatedProbeMetadata.retained === true
 
     stage = "receipt-backed explicit continuation after native process restart"
-    const nativeRestart = createRuntime(restartedInput)
+    const nativeRestart = createRuntime(restartedInput, { storage: "native" })
     const nativeRestartState = (await nativeRestart.load(proofOwner))!
     const pausedPanelContinuedAfterNativeRestart = await continueProof(nativeRestart, nativeRestartState, "native restart changed context")
     persistenceEvidence.push({ phase: "receipt-backed-paused-native-restart", continued: pausedPanelContinuedAfterNativeRestart,
@@ -1494,7 +1500,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
 
     stage = "unclosed native startup remains unconfirmed across writer recovery"
     const unknownOwner = await createProofOwner("Unclosed native startup recovery")
-    const unknownRuntime = createRuntime(restartedInput)
+    const unknownRuntime = createRuntime(restartedInput, { storage: "native" })
     const unknownDiscussion: Discussion = { ...structuredClone(proofDiscussion), id: "unknown-start", owner: unknownOwner,
       panel: [], status: "running", results: [], evaluations: [], pendingTurns: [], followups: [], cycle: 1 }
     const unknownState: ConversationState = { version: 1, discussions: [unknownDiscussion], outbox: [] }
@@ -1518,7 +1524,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
     const startupRejected = await unknownRuntime.prompt(unknownMember, "AUTO_DEBATE_RECONCILIATION_PENDING: held native startup")
       .then(() => false, () => true)
     client.session.prompt = synchronousPrompt
-    const unknownRestart = createRuntime(restartedInput)
+    const unknownRestart = createRuntime(restartedInput, { storage: "native" })
     await unknownRestart.load(unknownOwner)
     const unknownInspection = await unknownRestart.reconcileParticipant(unknownOwner, unknownMember)
     const idleBeforeContainment = await nativeStatus(client, projectDirectory, unknownMember.sessionID) === "idle"
@@ -1553,7 +1559,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       if (typeof root.id !== "string") throw new Error("Negative checkpoint owner identity missing")
       const caseOwner: Owner = { sessionID: root.id, agent: "build", directory: projectDirectory }
       negativeOwners.push(caseOwner)
-      const caseRuntime = createRuntime(restartedInput)
+      const caseRuntime = createRuntime(restartedInput, { storage: "native" })
       if (await caseRuntime.load(caseOwner) !== undefined) throw new Error("Negative owner was not a fresh bootstrap opportunity")
       await caseRuntime.save(caseOwner, { version: 1, discussions: [], outbox: [] })
       const child = (await storesFor(caseOwner))[0]
@@ -1590,10 +1596,10 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
     getData(await client.session.update(removeMarker), "native checkpoint marker removal and rename")
     const unmarkedChild = getData<RecordValue>(await client.session.get({ path: { id: unmarkedID },
       query: { directory: projectDirectory } }), "unmarked renamed checkpoint child observation")
-    const unmarkedRuntime = createRuntime(restartedInput)
+    const unmarkedRuntime = createRuntime(restartedInput, { storage: "native" })
     const unmarkedLoadRejected = await rejection("unmarked-renamed-checkpoint-load", unmarkedRuntime.load(unmarkedCase.caseOwner))
     const unmarkedDefaultSaveRejected = await rejection("unmarked-renamed-checkpoint-default-save", unmarkedRuntime.save(unmarkedCase.caseOwner, bootstrap))
-    const unmarkedFreshSaveRejected = await rejection("unmarked-renamed-checkpoint-fresh-save", createRuntime(restartedInput).save(unmarkedCase.caseOwner, bootstrap))
+    const unmarkedFreshSaveRejected = await rejection("unmarked-renamed-checkpoint-fresh-save", createRuntime(restartedInput, { storage: "native" }).save(unmarkedCase.caseOwner, bootstrap))
     const unmarkedChildrenAfter = getData<RecordValue[]>(await client.session.children({ path: { id: unmarkedCase.caseOwner.sessionID },
       query: { directory: projectDirectory } }), "unmarked renamed checkpoint children after recovery")
     const unmarkedHistoryAfter = await nativeMessages(client, projectDirectory, unmarkedID)
@@ -1610,20 +1616,20 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       messageIDs: unmarkedHistoryAfter.map((message) => isRecord(message.info) ? message.info.id : undefined) })
     const incompleteCase = await negativeStore("incomplete")
     await appendDamage(incompleteCase, "incomplete")
-    const incompleteCheckpointTailRejected = await rejection("incomplete-tail", createRuntime(restartedInput).load(incompleteCase.caseOwner))
+    const incompleteCheckpointTailRejected = await rejection("incomplete-tail", createRuntime(restartedInput, { storage: "native" }).load(incompleteCase.caseOwner))
     const corruptCase = await negativeStore("corrupt")
     await appendDamage(corruptCase, "corrupt", "opencode-debate/checkpoint/v1\ncorrupt-json")
-    const corruptCheckpointRejected = await rejection("corrupt-record", createRuntime(restartedInput).load(corruptCase.caseOwner))
+    const corruptCheckpointRejected = await rejection("corrupt-record", createRuntime(restartedInput, { storage: "native" }).load(corruptCase.caseOwner))
     const forkCase = await negativeStore("fork")
     await appendDamage(forkCase, "fork", "valid-fork")
-    const forkedCheckpointHistoryRejected = await rejection("forked-history", createRuntime(restartedInput).load(forkCase.caseOwner))
+    const forkedCheckpointHistoryRejected = await rejection("forked-history", createRuntime(restartedInput, { storage: "native" }).load(forkCase.caseOwner))
     const ambiguousCase = await negativeStore("ambiguous")
     const duplicate = { query: { directory: projectDirectory }, body: { parentID: ambiguousCase.caseOwner.sessionID,
       title: String(ambiguousCase.child.title), agent: String(ambiguousCase.child.agent), model: ambiguousCase.child.model,
       metadata: ambiguousCase.child.metadata, permission: ambiguousCase.child.permission } }
     const duplicateChild = getData<RecordValue>(await client.session.create(duplicate), "ambiguous native store creation")
     if (typeof duplicateChild.id === "string") allStorageIDs.add(duplicateChild.id)
-    const ambiguousCheckpointStoresRejected = await rejection("ambiguous-stores", createRuntime(restartedInput).load(ambiguousCase.caseOwner))
+    const ambiguousCheckpointStoresRejected = await rejection("ambiguous-stores", createRuntime(restartedInput, { storage: "native" }).load(ambiguousCase.caseOwner))
     const deletedCase = await negativeStore("deleted")
     const erasedMember = await deletedCase.caseRuntime.createParticipant(deletedCase.caseOwner, participant,
       await deletedCase.caseRuntime.restrictions(deletedCase.caseOwner))
@@ -1632,20 +1638,20 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
     assertNoError(await client.session.delete({ path: { id: String(deletedCase.child.id) }, query: { directory: projectDirectory } }), "native storage deletion")
     const deletedCheckpointStoreRejected = await rejection("deleted-known-store", deletedCase.caseRuntime.save(deletedCase.caseOwner, { version: 1, discussions: [], outbox: [] }))
       && (await storesFor(deletedCase.caseOwner)).length === 0
-    const erasedStateAutomaticMembersRejected = await rejection("erased-state-automatic-member-load", createRuntime(restartedInput).load(deletedCase.caseOwner))
-      && await rejection("erased-state-automatic-member-save", createRuntime(restartedInput).save(deletedCase.caseOwner, bootstrap))
+    const erasedStateAutomaticMembersRejected = await rejection("erased-state-automatic-member-load", createRuntime(restartedInput, { storage: "native" }).load(deletedCase.caseOwner))
+      && await rejection("erased-state-automatic-member-save", createRuntime(restartedInput, { storage: "native" }).save(deletedCase.caseOwner, bootstrap))
       && (await storesFor(deletedCase.caseOwner)).length === 0
     const remnantRootRequest = { query: { directory: projectDirectory }, body: { title: "Missing-state participant remnant probe",
       agent: "build", model: { providerID: "probe", id: "fake-model" }, permission: PARENT_RULES } }
     const remnantRoot = getData<RecordValue>(await client.session.create(remnantRootRequest), "remnant owner creation")
     if (typeof remnantRoot.id !== "string") throw new Error("Remnant owner identity missing")
     const remnantOwner: Owner = { sessionID: remnantRoot.id, agent: "build", directory: projectDirectory }
-    const remnantRuntime = createRuntime(restartedInput)
+    const remnantRuntime = createRuntime(restartedInput, { storage: "native" })
     const remnant = await remnantRuntime.createParticipant(remnantOwner, participant, await remnantRuntime.restrictions(remnantOwner))
     getData(await client.session.update({ path: { id: remnant.sessionID }, query: { directory: projectDirectory },
       body: { title: "Renamed to an ordinary specialist title" } }), "automatic remnant rename")
-    const missingStateParticipantRemnantsRejected = await rejection("missing-state-participant-remnant-load", createRuntime(restartedInput).load(remnantOwner))
-      && await rejection("missing-state-participant-remnant-save", createRuntime(restartedInput).save(remnantOwner, bootstrap))
+    const missingStateParticipantRemnantsRejected = await rejection("missing-state-participant-remnant-load", createRuntime(restartedInput, { storage: "native" }).load(remnantOwner))
+      && await rejection("missing-state-participant-remnant-save", createRuntime(restartedInput, { storage: "native" }).save(remnantOwner, bootstrap))
       && (await storesFor(remnantOwner)).length === 0
       && !providerObservations.requests.some((request) => request.sessionID === remnant.sessionID)
     const remnantChild = getData<RecordValue>(await client.session.get({ path: { id: remnant.sessionID },
@@ -1662,8 +1668,8 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       metadata: { ...remnantMetadata, "opencode-debate-automatic-participant": { ...participantMarker, version: "corrupt" } },
     } }
     getData(await client.session.update(damageMarker), "native automatic participant marker corruption")
-    const corruptAutomaticParticipantMarkerRejected = await rejection("corrupt-automatic-participant-marker-load", createRuntime(restartedInput).load(remnantOwner))
-      && await rejection("corrupt-automatic-participant-marker-save", createRuntime(restartedInput).save(remnantOwner, bootstrap))
+    const corruptAutomaticParticipantMarkerRejected = await rejection("corrupt-automatic-participant-marker-load", createRuntime(restartedInput, { storage: "native" }).load(remnantOwner))
+      && await rejection("corrupt-automatic-participant-marker-save", createRuntime(restartedInput, { storage: "native" }).save(remnantOwner, bootstrap))
       && (await storesFor(remnantOwner)).length === 0
     const prefixCase = await negativeStore("receipt-prefix")
     const prefixMember = await prefixCase.caseRuntime.createParticipant(prefixCase.caseOwner, participant, await prefixCase.caseRuntime.restrictions(prefixCase.caseOwner))
@@ -1681,7 +1687,7 @@ export async function runAutoDebateRuntimeProbe(options: { evidencePath?: string
       parts: [{ type: "text", text: "opencode-debate/checkpoint/v1\n" + JSON.stringify({ payload: prefixText,
         digest: createHash("sha256").update(prefixText).digest("hex") }) }],
     } }), "native changed receipt prefix append")
-    const changedReceiptPrefixRejected = await rejection("changed-native-receipt-prefix", createRuntime(restartedInput).load(prefixCase.caseOwner))
+    const changedReceiptPrefixRejected = await rejection("changed-native-receipt-prefix", createRuntime(restartedInput, { storage: "native" }).load(prefixCase.caseOwner))
     const checkpointSavesMadeNoModelCalls = !providerObservations.requests.some((request) => allStorageIDs.has(request.sessionID))
 
     stage = "native cancellation races"

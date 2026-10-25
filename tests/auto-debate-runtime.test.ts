@@ -1,17 +1,55 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { runAutomaticDebateNativeAcceptance, runAutomaticDebateNativeFixRegressions } from "./fixtures/auto-debate-full-plugin.ts"
-import { runAutoDebateRuntimeProbe } from "./fixtures/auto-debate-runtime.ts"
+import {
+  latestTranscriptOutcome,
+  runAutomaticDebateNativeAcceptance,
+  runAutomaticDebateNativeFixRegressions,
+} from "./fixtures/auto-debate-full-plugin.ts"
+import {
+  isReviewedNativeVersion,
+  REVIEWED_NATIVE_VERSIONS,
+  runAutoDebateRuntimeProbe,
+} from "./fixtures/auto-debate-runtime.ts"
 
 const enabled = process.env.OPENCODE_DEBATE_RUNTIME_TEST === "1"
 const fullPluginEnabled = process.env.OPENCODE_DEBATE_FULL_PLUGIN_TEST === "1"
+
+test("native acceptance allows only the exact reviewed OpenCode builds", () => {
+  assert.deepEqual([...REVIEWED_NATIVE_VERSIONS], ["1.18.35", "1.19.4"])
+  assert.equal(isReviewedNativeVersion("1.18.35"), true)
+  assert.equal(isReviewedNativeVersion("1.19.4"), true)
+  assert.equal(isReviewedNativeVersion("1.19.5"), false)
+  assert.equal(isReviewedNativeVersion("1.18.3"), false)
+})
+
+test("latest transcript outcome is read from the final appended frame", () => {
+  const cycleOneAwaiting = [
+    "## Current outcome",
+    "**Status:** awaiting-evaluation",
+    "**Current cycle:** 1",
+  ].join("\n")
+  const cycleTwoRunning = [
+    "## Current outcome",
+    "**Status:** running",
+    "**Current cycle:** 2",
+  ].join("\n")
+  assert.deepEqual(latestTranscriptOutcome(`${cycleOneAwaiting}\n\n${cycleTwoRunning}`),
+    { status: "running", cycle: 2 },
+    "an earlier awaiting-evaluation outcome must not satisfy a cycle-two wait")
+  assert.deepEqual(latestTranscriptOutcome(`${cycleOneAwaiting}\n\n${cycleTwoRunning}\n\n${[
+    "## Current outcome",
+    "**Status:** awaiting-evaluation",
+    "**Current cycle:** 2",
+  ].join("\n")}`), { status: "awaiting-evaluation", cycle: 2 })
+  assert.equal(latestTranscriptOutcome("no outcome frames"), undefined)
+})
 
 test("installed OpenCode runtime satisfies the automatic-debate boundary", { skip: !enabled, timeout: 180_000 }, async () => {
   const { observation, version } = await runAutoDebateRuntimeProbe({
     evidencePath: process.env.OPENCODE_DEBATE_RUNTIME_EVIDENCE,
   })
 
-  assert.match(version, /^\d+\.\d+\.\d+/)
+  assert.ok(isReviewedNativeVersion(version), `Unreviewed native runtime version: ${version}`)
   const criteria: [keyof typeof observation, boolean][] = [
     ["parentToolReturnedBeforeChildrenFinished", true],
     ["threeChildrenWereBusyTogether", true],
@@ -83,7 +121,7 @@ test("installed OpenCode runs the full automatic-debate plugin acceptance scenar
     includeFixes: process.env.OPENCODE_DEBATE_FINAL_FIX_TEST === "1",
   })
 
-  assert.equal(version, "1.18.35")
+  assert.ok(isReviewedNativeVersion(version), `Unreviewed native runtime version: ${version}`)
   assert.equal(observation.fullPluginWasLoaded, true)
   assert.equal(observation.enabledByConversationCommand, true)
   assert.equal(observation.twoDiscussionsWereIndependent, true)
@@ -106,7 +144,7 @@ test("installed OpenCode satisfies the focused corrective refusal and active bat
 }, async () => {
   const result = await runAutomaticDebateNativeFixRegressions({ corrective: true,
     evidencePath: process.env.OPENCODE_DEBATE_CORRECTIVE_EVIDENCE })
-  assert.equal(result.version, "1.18.35")
+  assert.ok(isReviewedNativeVersion(result.version), `Unreviewed native runtime version: ${result.version}`)
   assert.equal(result.corrective?.refusalThenApproved, true)
   assert.equal(result.corrective?.batches.length, 2)
   assert.ok(result.corrective!.batches.every((batch) => batch.allFencedBeforeCessation === true

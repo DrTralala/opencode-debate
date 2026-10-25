@@ -1,10 +1,15 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { readFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { after, test } from "node:test"
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { createServer } from "../index.ts"
 import { createAutomaticDebatePlugin, automaticParticipantAgentName } from "../src/auto-debate/plugin.ts"
 import type { DebateRegistry } from "../src/participants.ts"
 import type { Owner, Rule } from "../src/auto-debate/types.ts"
+import { privateOwnerKey } from "../src/auto-debate/private-store.ts"
 
 type RecordValue = Record<string, unknown>
 
@@ -31,8 +36,15 @@ const brief = {
 function response(data: unknown) { return { data } }
 function clone<T>(value: T): T { return structuredClone(value) }
 
-function fakeInput() {
+const temporaryStateRoots: string[] = []
+after(() => {
+  for (const root of temporaryStateRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function fakeInput(directory = ownerA.directory) {
   const projectID = "automatic-debate-project"
+  const stateRoot = mkdtempSync(join(tmpdir(), "opencode-debate-plugin-"))
+  temporaryStateRoots.push(stateRoot)
   const sessions = new Map<string, RecordValue>()
   const histories = new Map<string, RecordValue[]>()
   const calls: { method: string; id?: string; agent?: string; title?: string }[] = []
@@ -47,12 +59,12 @@ function fakeInput() {
     permission: [],
     metadata: {},
   })
-  addOwner(ownerA)
-  addOwner(ownerB)
-  addOwner({ sessionID: "main-research", agent: "research-primary", directory: ownerA.directory })
-  addOwner({ sessionID: "manual-coordinator", agent: "debate", directory: ownerA.directory })
-  addOwner({ sessionID: "specialist-session", agent: "reviewer", directory: ownerA.directory })
-  addOwner({ sessionID: "hidden-main-session", agent: "hidden_system", directory: ownerA.directory })
+  addOwner({ ...ownerA, directory })
+  addOwner({ ...ownerB, directory })
+  addOwner({ sessionID: "main-research", agent: "research-primary", directory })
+  addOwner({ sessionID: "manual-coordinator", agent: "debate", directory })
+  addOwner({ sessionID: "specialist-session", agent: "reviewer", directory })
+  addOwner({ sessionID: "hidden-main-session", agent: "hidden_system", directory })
   const status: Record<string, { type: string }> = {}
   const session = {
     get: async (request: { path: { id: string } }) => {
@@ -65,7 +77,7 @@ function fakeInput() {
     create: async (request: { query?: RecordValue; body: RecordValue }) => {
       const body = request.body
       const id = `child-${++nextSession}`
-      const value = { ...clone(body), id, projectID, directory: ownerA.directory }
+      const value = { ...clone(body), id, projectID, directory }
       sessions.set(id, value)
       histories.set(id, [])
       calls.push({ method: "session.create", id, agent: String(body.agent), title: String(body.title ?? "") })
@@ -160,12 +172,22 @@ function fakeInput() {
     client: {
       session,
       app: { agents: async () => response(agents) },
+      path: { get: async () => response({ state: stateRoot, config: join(stateRoot, "config"),
+        worktree: directory, directory }) },
     },
     project: { id: projectID },
-    directory: ownerA.directory,
-    worktree: ownerA.directory,
+    directory,
+    worktree: directory,
   } as unknown as PluginInput
-  return { input, sessions, histories, calls, agents, participantCalls: () => participantCalls }
+  return { input, sessions, histories, calls, agents, stateRoot, projectID,
+    participantCalls: () => participantCalls }
+}
+
+async function privateRevision(fake: ReturnType<typeof fakeInput>, owner: Owner = ownerA, revision = 1) {
+  const file = join(fake.stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(fake.projectID, owner),
+    `${String(revision).padStart(16, "0")}.json`)
+  const envelope = JSON.parse(await readFile(file, "utf8")) as { payload: string }
+  return JSON.parse(envelope.payload) as RecordValue
 }
 
 function enabledRegistry(): DebateRegistry {
@@ -187,8 +209,8 @@ function configFixture() {
   }
 }
 
-async function makePlugin(value: DebateRegistry = registry) {
-  const fake = fakeInput()
+async function makePlugin(value: DebateRegistry = registry, directory = ownerA.directory) {
+  const fake = fakeInput(directory)
   const hooks = await createAutomaticDebatePlugin(value)(fake.input)
   const config = configFixture()
   await hooks.config?.(config as never)
@@ -243,7 +265,8 @@ async function execute(hooks: Hooks, args: RecordValue, owner: Owner = ownerA): 
 }
 
 async function waitFor<T>(read: () => Promise<T>, predicate: (value: T) => boolean): Promise<T> {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
     const value = await read()
     if (predicate(value)) return value
     await new Promise<void>((resolve) => setImmediate(resolve))
@@ -406,7 +429,7 @@ test("off and reset controls persist across plugin recreation without participan
 
   assert.match(await command(fake.hooks, "off"), /disabled/i)
   const afterOff = await newPlugin()
-  assert.match(await command(afterOff, "status"), /disabled/i, "off remains persisted in the same native checkpoint store")
+  assert.match(await command(afterOff, "status"), /disabled/i, "off remains persisted in the same private checkpoint store")
 
   assert.match(await command(afterOff, "reset"), /configured default/i)
   const afterReset = await newPlugin()
@@ -528,6 +551,132 @@ test("manager-backed start, findings, evaluated resume after off, and owned canc
   assert.equal((cancelled.discussion as RecordValue).status, "cancelled")
   assert.equal((cancelled.discussion as RecordValue).unconfirmedCancellation, undefined)
   assert.ok(participantCalls() <= 18, "manager retry attempts remain bounded by three rounds and one retry")
+})
+
+test("discussion-specific status retains the brief and findings after restart when transcripts are off", async () => {
+  const fake = await makePlugin(enabledRegistry())
+  const started = JSON.parse(outputText(await execute(fake.hooks, { action: "start", brief }))).discussion as RecordValue
+  const id = String(started.id)
+  await waitFor(
+    async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }))) as RecordValue,
+    (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
+  )
+  await waitFor(async () => fake.calls, (calls) => calls.some((call) => call.method === "session.promptAsync"))
+  await fake.hooks.dispose?.()
+
+  const restarted = await createAutomaticDebatePlugin(enabledRegistry())(fake.input)
+  await restarted.config?.(configFixture() as never)
+  const output = JSON.parse(outputText(await execute(restarted, { action: "status", discussion_id: id }))) as RecordValue
+  const discussion = output.discussion as RecordValue
+  assert.equal(discussion.id, id)
+  assert.deepEqual(discussion.brief, brief)
+  assert.equal((discussion.results as RecordValue[]).length, 1)
+  assert.equal(((discussion.results as RecordValue[])[0].turns as RecordValue[]).length, 6)
+  assert.equal((discussion.participants as string[]).length, 3)
+  assert.equal((discussion.participantDetails as RecordValue[]).length, 3)
+  assert.equal((discussion.canonicalFindings as RecordValue[]).length, 6)
+  assert.equal((discussion.result as RecordValue).rounds, 2)
+  assert.equal(discussion.transcriptPath, undefined)
+  assert.equal(existsSync(join(ownerA.directory, "docs", "debates", `auto-${id}.md`)), false)
+  await restarted.dispose?.()
+})
+
+test("status remains concise without an ID while targeted status retains retained audit details", async () => {
+  const fake = await makePlugin(enabledRegistry())
+  const started = JSON.parse(outputText(await execute(fake.hooks, { action: "start", brief }))).discussion as RecordValue
+  const id = String(started.id)
+  await waitFor(
+    async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }))) as RecordValue,
+    (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
+  )
+
+  const listed = JSON.parse(outputText(await execute(fake.hooks, { action: "status" }))) as RecordValue
+  const awaiting = (listed.discussions as RecordValue[])[0]
+  assert.equal(awaiting.id, id)
+  assert.equal((awaiting.canonicalFindings as RecordValue[]).length, 6)
+  assert.equal((awaiting.result as RecordValue).rounds, 2)
+  for (const key of ["brief", "results", "evaluations", "followups", "pendingTurns", "stopReasons", "failures",
+    "participantDetails", "transcriptPath", "transcriptError"]) {
+    assert.equal(Object.hasOwn(awaiting, key), false, `list summary must not expose ${key}`)
+  }
+  assert.equal(JSON.stringify(listed).includes(brief.question), false)
+
+  const conclusion = "The findings support continuing."
+  await execute(fake.hooks, { action: "evaluate", discussion_id: id, evaluation: {
+    cycle: 1, conclusion, caveats: ["One assumption remains."], rationale: "More focused evidence is useful.", next: "continue",
+  } })
+  const concise = JSON.parse(outputText(await execute(fake.hooks, { action: "status" }))) as RecordValue
+  const conciseDiscussion = (concise.discussions as RecordValue[])[0]
+  assert.equal(conciseDiscussion.id, id)
+  assert.equal(conciseDiscussion.status, "paused")
+  assert.equal(conciseDiscussion.canonicalFindings, undefined)
+  assert.equal(conciseDiscussion.result, undefined)
+  const serialized = JSON.stringify(concise)
+  assert.equal(serialized.includes(brief.question), false)
+  assert.equal(serialized.includes("Independent finding"), false)
+  assert.equal(serialized.includes("Converged finding"), false)
+  assert.equal(serialized.includes(conclusion), false)
+
+  const targeted = JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }))).discussion as RecordValue
+  assert.equal(targeted.id, id)
+  assert.equal(targeted.status, "paused")
+  assert.equal(targeted.cycle, 1)
+  assert.equal(targeted.maxRounds, 3)
+  assert.deepEqual(targeted.participants, panel)
+  assert.deepEqual(targeted.persistence, { enabled: false, outcome: "disabled" })
+  assert.deepEqual(targeted.brief, brief)
+  assert.equal((targeted.results as RecordValue[]).length, 1)
+  assert.equal(((targeted.results as RecordValue[])[0].turns as RecordValue[]).length, 6)
+  assert.equal((targeted.evaluations as RecordValue[]).length, 1)
+  assert.equal(((targeted.evaluations as RecordValue[])[0].conclusion), conclusion)
+  assert.deepEqual(targeted.followups, [])
+  assert.deepEqual(targeted.pendingTurns, [])
+  assert.deepEqual(targeted.stopReasons, ["unanimous-stop"])
+  assert.deepEqual(targeted.failures, [])
+  assert.deepEqual((targeted.participantDetails as RecordValue[]).map(({ agent }) => agent), panel)
+  assert.deepEqual((targeted.participantDetails as RecordValue[]).map(({ model }) => model), ["fake/one", "fake/two", "fake/three"])
+  assert.equal((targeted.participantDetails as RecordValue[])[0].variant, "careful")
+  assert.ok((targeted.participantDetails as RecordValue[]).every(({ runtimeAgent }) =>
+    String(runtimeAgent).startsWith("opencode-debate-auto-")))
+  assert.equal(targeted.transcriptPath, undefined)
+  await fake.hooks.dispose?.()
+})
+
+test("discussion-specific audit after restart reports a saved transcript", async () => {
+  const projectDirectory = mkdtempSync(join(tmpdir(), "opencode-debate-transcript-"))
+  temporaryStateRoots.push(projectDirectory)
+  const transcriptRegistry: DebateRegistry = {
+    ...registry,
+    autoDebate: { enabled: true, maxRounds: 3, persistTranscripts: true },
+  }
+  const fake = await makePlugin(transcriptRegistry, projectDirectory)
+  const owner = { ...ownerA, directory: projectDirectory }
+  const started = JSON.parse(outputText(await execute(fake.hooks, { action: "start", brief }, owner))).discussion as RecordValue
+  const id = String(started.id)
+  await waitFor(
+    async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }, owner))) as RecordValue,
+    (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
+  )
+  const transcriptPath = `docs/debates/auto-${id}.md`
+  assert.equal(existsSync(join(projectDirectory, transcriptPath)), true)
+  await waitFor(async () => fake.calls, (calls) => calls.some((call) => call.method === "session.promptAsync"))
+  await fake.hooks.dispose?.()
+
+  const restarted = await createAutomaticDebatePlugin(transcriptRegistry)(fake.input)
+  await restarted.config?.(configFixture() as never)
+  const discussion = JSON.parse(outputText(await execute(restarted, { action: "status", discussion_id: id }, owner))).discussion as RecordValue
+  assert.equal(discussion.id, id)
+  assert.deepEqual(discussion.brief, brief)
+  assert.equal((discussion.results as RecordValue[]).length, 1)
+  assert.equal(((discussion.results as RecordValue[])[0].turns as RecordValue[]).length, 6)
+  assert.equal((discussion.participants as string[]).length, 3)
+  assert.equal((discussion.participantDetails as RecordValue[]).length, 3)
+  assert.equal((discussion.canonicalFindings as RecordValue[]).length, 6)
+  assert.equal((discussion.result as RecordValue).rounds, 2)
+  assert.equal(discussion.transcriptPath, transcriptPath)
+  assert.deepEqual(discussion.persistence, { enabled: true, outcome: "saved", path: transcriptPath })
+  assert.equal(existsSync(join(projectDirectory, transcriptPath)), true)
+  await restarted.dispose?.()
 })
 
 test("same-owner /debate-auto stop cancels its saved discussion", async () => {
@@ -735,13 +884,13 @@ test("config-enabled first native start and status initialise without a prior on
     try {
       const result = JSON.parse(outputText(await hooks.tool!.auto_debate.execute(args, context)))
       assert.equal(result.action, args.action)
-      const store = [...fake.sessions.values()].find((session) => session.title === "Automatic debate recovery checkpoints v1")!
-      assert.ok(store, "first status also seals initial native state before its invocation becomes history")
-      const first = fake.histories.get(String(store.id))![0]
-      const wrapper = JSON.parse(String((first.parts as RecordValue[])[0].text).split("\n").slice(1).join("\n"))
-      const payload = JSON.parse(wrapper.payload)
-      assert.deepEqual(payload.runtimeProof.entries[0], { kind: "owner-invocation-admitted", messageID: context.messageID,
-        callID: context.callID, partID: "native-part-first" })
+      const payload = await privateRevision(fake)
+      const entries = (payload.runtimeProof as RecordValue).entries as RecordValue[]
+      assert.deepEqual(entries[0], { kind: "owner-invocation-admitted",
+        messageID: context.messageID, callID: context.callID, partID: "native-part-first" })
+      assert.equal(fake.calls.some((call) => call.method === "session.create"
+        && call.title === "Automatic debate recovery checkpoints v1"), false,
+      "first status also seals initial private state before its invocation becomes history")
       if (args.action === "start") {
         const id = result.discussion.id
         await waitFor(async () => JSON.parse(outputText(await execute(hooks, { action: "status", discussion_id: id }))),

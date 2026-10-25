@@ -3,7 +3,16 @@ import { resolve } from "node:path"
 import type { PluginInput, ToolContext } from "@opencode-ai/plugin"
 import type { DebateParticipant } from "../participants.ts"
 import type { CheckpointSnapshot, ConversationState, DeliveryIntent, DeliveryReconciliation, Owner, OwnerPermissionSnapshot, PanelMember, ParticipantReconciliation, Rule, Runtime, RuntimeReceipt } from "./types.ts"
-import { AUTOMATIC_PARTICIPANT_KEY, assertAutomaticParticipantMarker, automaticParticipantMarker, createCheckpointStore, deliveryMessageID, journalView, type CurrentInvocation, type RefusedInvocation } from "./checkpoint.ts"
+import { AUTOMATIC_PARTICIPANT_KEY, assertAutomaticParticipantMarker, automaticParticipantMarker, type CurrentInvocation, type RefusedInvocation } from "./checkpoint.ts"
+import {
+  createManagedStore,
+  type CompactionResult,
+  type ParticipantQuiescenceVerifier,
+  type QuiescentStart,
+  type RuntimeStorageMode,
+  type StoreMaintenance,
+} from "./storage.ts"
+import { deliveryMessageID, journalView, parseConversationState } from "./validation.ts"
 
 const MANUAL_COORDINATOR = "debate"
 const PARTICIPANT_BASELINE: readonly Rule[] = [
@@ -146,18 +155,6 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
 }
 
-function isBrief(value: unknown): boolean {
-  return isRecord(value)
-    && nonEmptyString(value.question)
-    && nonEmptyString(value.objective)
-    && isStringArray(value.facts)
-    && isStringArray(value.assumptions)
-    && isStringArray(value.constraints)
-    && isStringArray(value.alternatives)
-    && typeof value.uncertainty === "string"
-    && nonEmptyString(value.neededOutcome)
-}
-
 function isParticipant(value: unknown): value is DebateParticipant {
   return isRecord(value)
     && nonEmptyString(value.agent)
@@ -171,103 +168,6 @@ function isOwner(value: unknown): value is Owner {
     && nonEmptyString(value.sessionID)
     && nonEmptyString(value.agent)
     && nonEmptyString(value.directory)
-}
-
-function isTurn(value: unknown): boolean {
-  return isRecord(value)
-    && nonEmptyString(value.participant)
-    && Number.isSafeInteger(value.cycle)
-    && Number.isSafeInteger(value.round)
-    && typeof value.text === "string"
-    && (value.consensus === undefined || typeof value.consensus === "boolean")
-    && (value.stop === undefined || typeof value.stop === "boolean")
-}
-
-function isCycleResult(value: unknown): boolean {
-  return isRecord(value)
-    && Number.isSafeInteger(value.cycle)
-    && Number.isSafeInteger(value.rounds)
-    && ["complete", "partial", "cancelled", "interrupted"].includes(String(value.status))
-    && ["unanimous-stop", "round-limit", "participant-failure", "explicit-stop", "obsolete", "shutdown"]
-      .includes(String(value.reason))
-    && Array.isArray(value.turns)
-    && value.turns.every(isTurn)
-    && Array.isArray(value.failures)
-    && value.failures.every((failure) => isRecord(failure)
-      && nonEmptyString(failure.participant)
-      && typeof failure.message === "string")
-    && typeof value.consensus === "boolean"
-}
-
-function isEvaluation(value: unknown): boolean {
-  return isRecord(value)
-    && Number.isSafeInteger(value.cycle)
-    && typeof value.conclusion === "string"
-    && isStringArray(value.caveats)
-    && typeof value.rationale === "string"
-    && ["act", "investigate", "continue", "report-unresolved"].includes(String(value.next))
-    && (value.feedback === undefined || typeof value.feedback === "string")
-}
-
-function isDiscussion(value: unknown): boolean {
-  if (!isRecord(value) || !nonEmptyString(value.id) || !isOwner(value.owner) || !isRecord(value.config)) return false
-  const config = value.config
-  if (typeof config.enabled !== "boolean"
-    || !Number.isSafeInteger(config.maxRounds)
-    || (config.maxRounds as number) < 3
-    || typeof config.persistTranscripts !== "boolean"
-    || !isBrief(value.brief)
-    || !Array.isArray(value.panel)
-    || !value.panel.every((member) => isRecord(member)
-      && isParticipant(member.participant)
-      && nonEmptyString(member.sessionID)
-      && nonEmptyString(member.runtimeAgent))
-    || !["running", "awaiting-evaluation", "paused", "resolved", "cancelled", "interrupted"].includes(String(value.status))
-    || !Number.isSafeInteger(value.generation)
-    || !Number.isSafeInteger(value.cycle)
-    || !Array.isArray(value.results)
-    || !value.results.every(isCycleResult)
-    || !Array.isArray(value.evaluations)
-    || !value.evaluations.every(isEvaluation)
-    || !Array.isArray(value.pendingTurns)
-    || !value.pendingTurns.every(isTurn)
-    || !Array.isArray(value.followups)
-    || !value.followups.every((followup) => isRecord(followup)
-      && Number.isSafeInteger(followup.cycle)
-      && typeof followup.feedback === "string")) return false
-
-  if (value.deliveryUncertainCycles !== undefined
-    && (!Array.isArray(value.deliveryUncertainCycles)
-      || !value.deliveryUncertainCycles.every((item) => isRecord(item)
-        && Number.isSafeInteger(item.cycle)
-        && typeof item.reason === "string"))) return false
-  if (value.transcriptPath !== undefined && typeof value.transcriptPath !== "string") return false
-  if (value.transcriptError !== undefined && typeof value.transcriptError !== "string") return false
-  if (value.cancellation !== undefined
-    && (!isRecord(value.cancellation)
-      || !isStringArray(value.cancellation.pendingSessionIDs)
-      || !isStringArray(value.cancellation.errors))) return false
-  return true
-}
-
-function isConversationState(value: unknown): value is ConversationState {
-  return isRecord(value)
-    && value.version === 1
-    && (value.override === undefined || typeof value.override === "boolean")
-    && Array.isArray(value.discussions)
-    && value.discussions.every(isDiscussion)
-    && Array.isArray(value.outbox)
-    && value.outbox.every((item) => isRecord(item)
-      && nonEmptyString(item.id)
-      && nonEmptyString(item.discussionID)
-      && Number.isSafeInteger(item.cycle)
-      && (item.state === "pending" || item.state === "sent" || item.state === "acknowledged")
-      && (item.messageID === undefined || nonEmptyString(item.messageID)))
-}
-
-function parseConversationState(value: unknown): ConversationState {
-  if (!isConversationState(value)) fail("OpenCode automatic-debate checkpoint state is invalid or unsupported")
-  return value
 }
 
 function parseModel(model: string): { providerID: string; modelID: string } {
@@ -324,7 +224,13 @@ async function sleep(milliseconds: number): Promise<void> {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
 }
 
-export interface NativeRuntime extends Runtime {
+export interface NativeRuntime extends Runtime, StoreMaintenance {
+  /** Lower-level storage maintenance surface used after containment and by tests. */
+  maintenance: StoreMaintenance
+  /** Refuse new writes for a deleted parent before any asynchronous cleanup. */
+  noteOwnerDeleted(sessionID: string): void
+  /** Record that deletion evidence was retained without exposing store content. */
+  noteOwnerDeletionRetained(sessionID: string): void
   /** Called only by the native tool.execute.before hook, not by tool arguments. */
   noteToolInvocation(input: { tool: string; sessionID: string; callID: string }): void
   discardToolInvocation(context: ToolContext): void
@@ -336,10 +242,12 @@ export interface NativeRuntime extends Runtime {
   admitToolInvocation(owner: Owner, context: ToolContext): Promise<void>
 }
 
-export function createRuntime(input: PluginInput): NativeRuntime {
+export function createRuntime(input: PluginInput, options?: { storage?: RuntimeStorageMode }): NativeRuntime {
   const saveLocks = new Map<string, Promise<void>>()
+  const deletedOwners = new Set<string>()
   const refusals = new Map<string, RefusedInvocation[]>()
-  const checkpoints = createCheckpointStore(input, parseConversationState, (owner) => refusals.get(owner.sessionID) ?? [])
+  const checkpoints = createManagedStore(input, options?.storage ?? "auto",
+    (owner) => refusals.get(owner.sessionID) ?? [], verifyParticipantQuiescent)
   // Only this instance's freshly created sessions have known startup provenance.
   // Keep stopped records as tombstones; never adopt recovered sessions from idle alone.
   const participants = new Map<string, ParticipantState>()
@@ -687,7 +595,104 @@ export function createRuntime(input: PluginInput): NativeRuntime {
     return { session, info, part, invocation }
   }
 
-  return {
+  async function verifyParticipantQuiescent(
+    owner: Owner,
+    member: PanelMember,
+    proof: Extract<RuntimeReceipt, { kind: "member-bound" }>,
+    starts: readonly QuiescentStart[],
+  ): Promise<{ exhausted: boolean; reason?: string }> {
+    try {
+      if (JSON.stringify(proof.member) !== JSON.stringify(member)) {
+        return { exhausted: false, reason: "the member-bound receipt does not match the saved participant" }
+      }
+      const startIDs = new Set<string>()
+      for (const start of starts) {
+        if (start.open.sessionID !== member.sessionID || start.open.discussionID !== proof.discussionID) {
+          return { exhausted: false, reason: "participant startup evidence belongs to another owner or discussion" }
+        }
+        if (!start.closed) return { exhausted: false, reason: "participant startup is not closed" }
+        if (startIDs.has(start.open.messageID)) {
+          return { exhausted: false, reason: "participant startup evidence is duplicated" }
+        }
+        startIDs.add(start.open.messageID)
+      }
+
+      await readOwner(owner)
+      const native = await readParticipant(member)
+      assertAutomaticParticipantMarker(native, owner, input.project.id, proof.nonce)
+      if (JSON.stringify(native.permission) !== JSON.stringify(proof.permission)) {
+        return { exhausted: false, reason: "participant permission identity changed" }
+      }
+      const statuses = responseData<unknown>(await input.client.session.status({
+        query: { directory: input.directory },
+      }), "participant quiescence status")
+      if (!isRecord(statuses)) return { exhausted: false, reason: "participant status is unavailable" }
+      const status = statuses[member.sessionID]
+      if (status !== undefined && (!isRecord(status) || status.type !== "idle")) {
+        return { exhausted: false, reason: "participant native work is not idle" }
+      }
+      const messages = responseData<unknown>(await input.client.session.messages({
+        path: { id: member.sessionID },
+        query: { directory: input.directory },
+      }), "participant quiescence history")
+      if (!Array.isArray(messages)) return { exhausted: false, reason: "participant history is unavailable" }
+
+      const users = new Set<string>()
+      const assistants = new Set<string>()
+      for (const value of messages) {
+        const message = nativeMessage(value)
+        const info = message.info
+        if (!nonEmptyString(info.id) || info.sessionID !== member.sessionID
+          || (info.role !== "user" && info.role !== "assistant")) {
+          return { exhausted: false, reason: "participant history binding is invalid" }
+        }
+        if (message.parts.some((part) => !isRecord(part) || !nonEmptyString(part.id)
+          || part.sessionID !== member.sessionID || part.messageID !== info.id)) {
+          return { exhausted: false, reason: "participant history part binding is invalid" }
+        }
+        if (info.role === "user") {
+          const start = starts.find((candidate) => candidate.open.messageID === info.id)
+          if (!start || start.closed?.startup === "never-invoked" || users.has(info.id)
+            || info.agent !== member.runtimeAgent || !sameModel(info.model, member.participant)
+            || message.parts.length !== 1 || !isRecord(message.parts[0]) || message.parts[0].type !== "text"
+            || typeof message.parts[0].text !== "string"
+            || createHash("sha256").update(message.parts[0].text).digest("hex") !== start.open.textDigest) {
+            return { exhausted: false, reason: "participant has unknown or changed startup history" }
+          }
+          users.add(info.id)
+          continue
+        }
+        const start = starts.find((candidate) => candidate.open.messageID === info.parentID)
+        if (!start || start.closed?.startup === "never-invoked" || !isRecord(info.time)
+          || typeof info.time.completed !== "number" || assistants.has(info.id)
+          || message.parts.some((part) => isRecord(part) && part.type === "tool"
+            && (!isRecord(part.state) || !["completed", "error"].includes(String(part.state.status))))) {
+          return { exhausted: false, reason: "participant has unknown or unfinished assistant work" }
+        }
+        if (start.closed?.outcome === "answer" && start.closed.assistantID !== info.id) {
+          return { exhausted: false, reason: "participant terminal history does not match its saved answer" }
+        }
+        assistants.add(info.id)
+      }
+      for (const start of starts) {
+        if (start.closed?.outcome === "answer"
+          && (!users.has(start.open.messageID) || !assistants.has(start.closed.assistantID!))) {
+          return { exhausted: false, reason: "participant terminal history is missing" }
+        }
+      }
+      return { exhausted: true }
+    } catch (error) {
+      return { exhausted: false, reason: error instanceof Error ? error.message : "participant evidence is unavailable" }
+    }
+  }
+
+  const runtime: NativeRuntime = {
+    maintenance: {} as StoreMaintenance,
+    noteOwnerDeleted: (sessionID) => {
+      if (typeof sessionID === "string" && sessionID.trim().length > 0) deletedOwners.add(sessionID)
+      checkpoints.noteOwnerDeleted(sessionID)
+    },
+    noteOwnerDeletionRetained: (sessionID) => checkpoints.noteOwnerDeletionRetained(sessionID),
     noteToolInvocation: ({ tool, sessionID, callID }) => {
       if (tool === "auto_debate" && nonEmptyString(sessionID) && nonEmptyString(callID)) {
         invocations.add(invocationKey(sessionID, callID))
@@ -1124,6 +1129,7 @@ export function createRuntime(input: PluginInput): NativeRuntime {
     },
 
     save: async (owner, state) => {
+      if (deletedOwners.has(owner.sessionID)) fail("Automatic-debate owner session was deleted")
       const validated = parseConversationState(structuredClone(state)) // Capture before the lock's first await.
       if (validated.discussions.some((discussion) => discussion.owner.sessionID !== owner.sessionID || discussion.owner.agent !== owner.agent
         || resolve(discussion.owner.directory) !== resolve(owner.directory))) fail("Checkpoint state has a foreign discussion owner")
@@ -1157,5 +1163,56 @@ export function createRuntime(input: PluginInput): NativeRuntime {
         }
       })
     },
+
+    migrationPreview: (owner) => withSaveLock(owner.sessionID, async () => {
+      await readOwner(owner)
+      return checkpoints.maintenance.migrationPreview(owner)
+    }),
+
+    migrate: (owner, token) => withSaveLock(owner.sessionID, async () => {
+      await readOwner(owner)
+      return checkpoints.maintenance.migrate(owner, token)
+    }),
+
+    sourceDeletionPreview: (owner) => withSaveLock(owner.sessionID, async () => {
+      await readOwner(owner)
+      return checkpoints.maintenance.sourceDeletionPreview(owner)
+    }),
+
+    deleteSource: (owner, storeID, token) => withSaveLock(owner.sessionID, async () => {
+      await readOwner(owner)
+      return checkpoints.maintenance.deleteSource(owner, storeID, token)
+    }),
+
+    status: (owner) => withSaveLock(owner.sessionID, async () => {
+      await readOwner(owner)
+      return checkpoints.maintenance.status(owner)
+    }),
+
+    reconcileDeletedOwner: (sessionID) => {
+      // The tombstone is recorded synchronously before the writer queue so a
+      // concurrent save cannot race ahead of the deletion decision.
+      if (typeof sessionID === "string" && sessionID.trim().length > 0) deletedOwners.add(sessionID)
+      checkpoints.noteOwnerDeleted(sessionID)
+      return withSaveLock(sessionID, () => checkpoints.maintenance.reconcileDeletedOwner(sessionID))
+    },
+
+    reconcileOrphanedStores: () => checkpoints.maintenance.reconcileOrphanedStores(),
+
+    compactIfEligible: (owner, predicate): Promise<CompactionResult> =>
+      withSaveLock(owner.sessionID, () => checkpoints.maintenance.compactIfEligible(owner, predicate)),
   }
+  runtime.maintenance = {
+    migrationPreview: runtime.migrationPreview,
+    migrate: runtime.migrate,
+    sourceDeletionPreview: runtime.sourceDeletionPreview,
+    deleteSource: runtime.deleteSource,
+    reconcileDeletedOwner: runtime.reconcileDeletedOwner,
+    reconcileOrphanedStores: runtime.reconcileOrphanedStores,
+    // The raw status deliberately skips owner liveness so retained deletion
+    // evidence can still be inspected after the parent has disappeared.
+    status: (owner) => checkpoints.maintenance.status(owner),
+    compactIfEligible: runtime.compactIfEligible,
+  }
+  return runtime
 }

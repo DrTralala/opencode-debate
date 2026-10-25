@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v3.2.0](https://img.shields.io/badge/version-v3.2.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.2.0)
+[![Version: v3.3.0](https://img.shields.io/badge/version-v3.3.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.3.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -126,11 +126,35 @@ Conversation controls take effect immediately without rewriting YAML:
 
 Participants cannot edit files or launch nested debates. Normal OpenCode permissions still apply; the tool's permission action patterns are `start`, `status`, `evaluate`, `resume`, and `cancel`.
 
-State is checkpointed in a native child session. After restart, in-flight work is marked interrupted, not replayed. Resuming requires verified original sessions, a recorded evaluation, and focused feedback. If a background notification is missing, check status rather than assuming completion.
+After restart, in-flight work is marked interrupted, not replayed. Resuming requires verified original sessions, a recorded evaluation, and focused feedback. If a background notification is missing, check status rather than assuming completion.
+
+### Automatic-debate storage
+
+New automatic-debate state on Linux is stored under `<state>/opencode-debate/auto-debate/v2/`. Directories are private by `0700` and files by `0600`; there is no checkpoint child for new Linux owners. The state is host-bound.
+
+Existing native checkpoints remain until explicitly migrated. Native Windows and other platforms remain on the native backend; private storage is Linux-only in v3.3.0. If a native checkpoint child carries a Linux migration marker, non-Linux startup fails closed without needing a private path, rather than resurrecting the old native source. Restore both the native source and the matching Linux plugin state on the original host.
+
+Storage commands are user-only and do not resume a debate:
+
+```text
+/debate-auto storage status
+/debate-auto storage migrate
+/debate-auto storage migrate <token> --writer-handover-confirmed
+/debate-auto storage delete-source
+/debate-auto storage delete-source <native-store-id> <token>
+```
+
+A prepared or incomplete migration, and a retiring source deletion, are resumed with the same token and exact ID. Ordinary loads fail closed while either state is incomplete. The migration flag means the user has stopped the old writer and started one replacement writer; it does not resume a debate.
+
+Audit details are available only with a specific `discussion_id`, including after restart and when transcripts are disabled. Compaction occurs only after every discussion is terminal and all runtime and delivery evidence is settled. Confirmed parent deletion removes only a safe, drained private store; unresolved containment or receipt evidence is retained and reported.
+
+Backup and resume require both the native sessions and plugin state. A partial restore fails closed when the boundary, source or provenance is present but mismatched. Total removal of both private state and the outside-revision migration boundary is indistinguishable from a never-migrated owner and is not an anti-rollback guarantee. Within one runtime, an observed suffix or high-water loss rejects; hashes alone cannot detect a whole suffix deleted before a restart.
+
+Storage is not encrypted: same-user processes and administrators can read the files. Ordinary deletion or compaction does not claim secure erasure of disk blocks, filesystem snapshots or backups. Process-kill tests are not power-loss proof; durability claims are limited to synced local Linux filesystem behaviour.
 
 ### Viewing participant sessions
 
-Use **Ctrl+X, then Down** to enter a child, **Left / Right** or **Prev / Next** to cycle siblings, and **Up** or **Parent** to return. These are the [OpenCode 1.19.0 defaults](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/tui/src/config/keybind.ts); custom bindings may differ. Cycling includes other subagents and the checkpoint session. The `auto_debate` tool entry itself does not open a participant session.
+Use **Ctrl+X, then Down** to enter a child, **Left / Right** or **Prev / Next** to cycle siblings, and **Up** or **Parent** to return. These are the [OpenCode 1.19.0 defaults](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/tui/src/config/keybind.ts); custom bindings may differ. Cycling includes other subagents; existing native checkpoint sessions may also appear. The `auto_debate` tool entry itself does not open a participant session.
 
 ## Mini Debates
 

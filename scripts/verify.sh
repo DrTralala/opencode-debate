@@ -108,8 +108,8 @@ assert_contains "README.md" '"opencode-debate@latest"'
 assert_not_contains "README.md" 'For a reproducible installation, pin the exact release:'
 assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
 assert_not_contains "README.md" 'this package is not published to npm'
-assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v3.2.0'
-assert_contains "README.md" 'img.shields.io/badge/version-v3.2.0-blue.svg?style=flat-square'
+assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/tree/v3.3.0'
+assert_contains "README.md" 'img.shields.io/badge/version-v3.3.0-blue.svg?style=flat-square'
 assert_contains "README.md" "selected set's continuation mode"
 assert_contains "README.md" 'Python response-formatter and HTML-generator tests'
 assert_contains "README.md" 'Python 3.9 or later'
@@ -117,6 +117,11 @@ assert_contains "README.md" 'docs/debates/'
 assert_contains "README.md" 'GPT-5.6 Sol, `xhigh`'
 assert_contains "README.md" '${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml'
 assert_contains "README.md" 'atomically creates it as an exact copy'
+assert_contains "README.md" "opencode-debate/auto-debate/v2/"
+assert_contains "README.md" "/debate-auto storage migrate"
+assert_contains "README.md" "Linux-only"
+assert_contains "README.md" "not encrypted"
+assert_contains "README.md" "native sessions and plugin state"
 assert_contains "README.md" 'complete, authoritative version 2 configuration'
 assert_contains "README.md" 'first set in YAML source order'
 assert_contains "README.md" 'quit and restart OpenCode'

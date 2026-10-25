@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto"
 import { resolve } from "node:path"
 import type { PluginInput } from "@opencode-ai/plugin"
-import type { CheckpointSnapshot, ConversationState, Owner, Rule, RuntimeJournal, RuntimeReceipt } from "./types.ts"
+import { privateOwnerKey } from "./private-store.ts"
+import type { CheckpointSnapshot, ConversationState, LegacySource, NativeMigrationMarker, Owner, Rule, RuntimeJournal, StorageBinding } from "./types.ts"
+import { assertRuntimeProofPrefix, parseRuntimeJournal } from "./validation.ts"
 
 type RecordValue = Record<string, unknown>
 type Model = { providerID: string; modelID: string; variant?: string }
@@ -18,6 +20,7 @@ type Binding = {
 type Store = { sessionID: string; binding: Binding; head: string | null; revision: number; loaded: boolean; failed?: string }
 type Checkpoint = CheckpointSnapshot & { messageID: string; revision: number; previous: string | null; digest: string }
 const KEY = "opencode-debate-checkpoint-store"
+const MIGRATION_KEY = "opencode-debate-migrated"
 const TITLE = "Automatic debate recovery checkpoints v1"
 const PREFIX = "opencode-debate/checkpoint/v1\n"
 const DENY: Rule[] = [{ permission: "*", pattern: "*", action: "deny" }]
@@ -35,6 +38,25 @@ export type CurrentInvocation = { messageID: string; callID: string; partID: str
  * an error diagnostic or supplied inside manager/application state. */
 export type RefusedInvocation = Readonly<CurrentInvocation & { created: number; start: number; inputDigest: string }>
 
+export type NativeCheckpointHead = {
+  storeID: string
+  revision: number
+  head: string
+  digest: string
+  snapshot: CheckpointSnapshot
+  migration?: NativeMigrationMarker
+}
+
+export interface NativeCheckpointStore {
+  load(owner: Owner, invocation?: CurrentInvocation): Promise<CheckpointSnapshot | undefined>
+  save(owner: Owner, snapshot: CheckpointSnapshot, context: { agent: string; model: Model }, invocation?: CurrentInvocation): Promise<void>
+  probe(owner: Owner): Promise<{ storeID: string; migration?: NativeMigrationMarker } | undefined>
+  inspect(owner: Owner, invocation?: CurrentInvocation): Promise<NativeCheckpointHead | undefined>
+  inspectExact(owner: Owner, storeID: string): Promise<NativeCheckpointHead | undefined>
+  markMigrated(owner: Owner, marker: NativeMigrationMarker, expected: LegacySource): Promise<void>
+  delete(owner: Owner, expected: LegacySource): Promise<void>
+}
+
 function object(value: unknown): value is RecordValue { return value !== null && typeof value === "object" && !Array.isArray(value) }
 function fail(message: string): never { throw new Error(`Automatic-debate checkpoint ${message}`) }
 function data(value: unknown, operation: string): unknown {
@@ -46,128 +68,62 @@ function data(value: unknown, operation: string): unknown {
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex") }
 function idPrefix(store: Store): string { return `msg_adcp_${store.binding.nonce}_` }
 
-export function deliveryMessageID(owner: Owner, project: string, id: string): string {
-  return `msg_${hash(JSON.stringify(["opencode-debate/delivery/v1", project, resolve(owner.directory), owner.sessionID, owner.agent, id]))}`
+function sameSource(left: LegacySource, right: LegacySource): boolean {
+  return left.storeID === right.storeID && left.revision === right.revision
+    && left.head === right.head && left.digest === right.digest
 }
 
-export function journalView(proof: RuntimeJournal | undefined) {
-  const members = new Map<string, { origin: Extract<RuntimeReceipt, { kind: "member-bound" }>;
-    starts: Map<string, { open: Extract<RuntimeReceipt, { kind: "participant-start-open" }>; closed?: Extract<RuntimeReceipt, { kind: "participant-start-closed" }> }>;
-    fenced: boolean; confirmed: boolean }>()
-  const deliveries = new Map<string, { intent: Extract<RuntimeReceipt, { kind: "delivery-intent" }>;
-    attempt?: string; noCall: boolean; persisted: boolean }>()
-  for (const entry of proof?.entries ?? []) {
-    switch (entry.kind) {
-      case "member-bound": members.set(entry.member.sessionID, { origin: entry, starts: new Map(), fenced: false, confirmed: false }); break
-      case "participant-start-open": members.get(entry.sessionID)!.starts.set(entry.messageID, { open: entry }); break
-      case "participant-start-closed": members.get(entry.sessionID)!.starts.get(entry.messageID)!.closed = entry; break
-      case "participant-fenced": members.get(entry.sessionID)!.fenced = true; break
-      case "participant-stop-confirmed": members.get(entry.sessionID)!.confirmed = true; break
-      case "delivery-intent": deliveries.set(entry.delivery.id, { intent: entry, noCall: false, persisted: false }); break
-      case "delivery-dispatch-open": Object.assign(deliveries.get(entry.deliveryID)!, { attempt: entry.attemptID, noCall: false }); break
-      case "delivery-no-call": deliveries.get(entry.deliveryID)!.noCall = true; break
-      case "delivery-persisted": deliveries.get(entry.deliveryID)!.persisted = true; break
-    }
-  }
-  return { members, deliveries }
+function notFound(value: unknown): boolean {
+  if (!object(value)) return false
+  if (value.response instanceof Response) return value.response.status === 404
+  if (value.status === 404 || value.statusCode === 404) return true
+  return object(value.response) && (value.response.status === 404 || value.response.statusCode === 404)
 }
 
-/** Exact receipt shapes and causal transitions; a checksum is not an authority to forge a close. */
-function parseJournal(value: unknown, state: ConversationState, binding: Binding): RuntimeJournal | undefined {
-  if (value === undefined) return undefined
-  if (!object(value) || value.version !== 1 || !Array.isArray(value.entries)
-    || Object.keys(value).some((key) => !["version", "entries"].includes(key))) fail("runtime proof journal is invalid")
-  const entries: RuntimeReceipt[] = []
-  const ids = new Set<string>(); const items = new Set<string>(); const attempts = new Set<string>()
-  const string = (item: unknown): item is string => typeof item === "string" && item.trim().length > 0
-  const integer = (item: unknown, minimum: number) => Number.isSafeInteger(item) && (item as number) >= minimum
-  const exact = (entry: RecordValue, keys: string[]) => Object.keys(entry).every((key) => keys.includes(key))
-  for (const raw of value.entries) {
-    if (!object(raw) || !string(raw.kind)) fail("runtime receipt is invalid")
-    const view = journalView({ version: 1, entries })
-    const member = view.members.get(String(raw.sessionID))
-    const delivery = view.deliveries.get(String(raw.deliveryID))
-    let valid = false
-    switch (raw.kind) {
-      case "owner-invocation-admitted":
-        valid = entries.length === 0 && exact(raw, ["kind", "messageID", "callID", "partID"])
-          && string(raw.messageID) && string(raw.callID) && string(raw.partID)
-        break
-      case "member-bound": {
-        const discussion = state.discussions.find((item) => item.id === raw.discussionID)
-        const saved = discussion?.panel.find((item) => object(raw.member) && item.sessionID === raw.member.sessionID)
-        valid = exact(raw, ["kind", "discussionID", "member", "nonce", "permission"])
-          && !!saved && JSON.stringify(saved) === JSON.stringify(raw.member) && !view.members.has(saved.sessionID)
-          && typeof raw.nonce === "string" && /^[a-f0-9]{32}$/.test(raw.nonce)
-          && Array.isArray(raw.permission) && raw.permission.every((rule) => object(rule)
-            && exact(rule, ["permission", "pattern", "action"]) && string(rule.permission)
-            && typeof rule.pattern === "string" && ["allow", "ask", "deny"].includes(String(rule.action)))
-        break
-      }
-      case "participant-start-open":
-        valid = exact(raw, ["kind", "sessionID", "messageID", "discussionID", "generation", "cycle", "textDigest"])
-          && !!member && !member.fenced && [...member.starts.values()].every((start) => start.closed)
-          && raw.discussionID === member.origin.discussionID && integer(raw.generation, 0) && integer(raw.cycle, 1)
-          && string(raw.messageID) && !ids.has(raw.messageID) && typeof raw.textDigest === "string" && /^[a-f0-9]{64}$/.test(raw.textDigest)
-        if (valid) ids.add(raw.messageID as string)
-        break
-      case "participant-start-closed": {
-        const start = member?.starts.get(String(raw.messageID))
-        valid = exact(raw, ["kind", "sessionID", "messageID", "startup", "outcome", "assistantID"])
-          && !!start && !start.closed && ["synchronous-response", "never-invoked"].includes(String(raw.startup))
-          && ["answer", "definite-failure"].includes(String(raw.outcome))
-          && (raw.assistantID === undefined ? raw.outcome === "definite-failure" : string(raw.assistantID))
-          && (raw.startup !== "never-invoked" || raw.outcome === "definite-failure" && raw.assistantID === undefined)
-        break
-      }
-      case "participant-fenced": valid = exact(raw, ["kind", "sessionID"]) && !!member && !member.fenced; break
-      case "participant-stop-confirmed":
-        valid = exact(raw, ["kind", "sessionID"]) && !!member && member.fenced && !member.confirmed
-          && [...member.starts.values()].every((start) => start.closed)
-        break
-      case "delivery-intent": {
-        const intent = raw.delivery
-        const selection = raw.selection
-        valid = exact(raw, ["kind", "delivery", "messageID", "selection"])
-          && object(intent) && exact(intent, ["id", "outboxIDs", "text"]) && string(intent.id) && string(intent.text)
-          && !view.deliveries.has(intent.id) && Array.isArray(intent.outboxIDs) && intent.outboxIDs.length > 0
-          && intent.outboxIDs.every((id) => string(id) && !items.has(id))
-          && JSON.stringify(intent.outboxIDs) === JSON.stringify([...new Set(intent.outboxIDs)].sort())
-          && intent.outboxIDs.every((id) => state.outbox.filter((item) => item.id === id).length === 1
-            && state.discussions.some((discussion) => discussion.id === state.outbox.find((item) => item.id === id)!.discussionID
-              && discussion.results.some((result) => result.cycle === state.outbox.find((item) => item.id === id)!.cycle)))
-          && raw.messageID === deliveryMessageID({ sessionID: binding.owner, directory: binding.directory,
-            agent: binding.agent }, binding.project, intent.id)
-          && object(selection) && exact(selection, ["agent", "model"]) && selection.agent === binding.agent
-          && object(selection.model) && exact(selection.model, ["providerID", "modelID", "variant"])
-          && string(selection.model.providerID) && string(selection.model.modelID)
-          && (selection.model.variant === undefined || string(selection.model.variant))
-        if (valid) for (const id of (intent as { outboxIDs: string[] }).outboxIDs) items.add(id)
-        break
-      }
-      case "delivery-dispatch-open":
-        valid = exact(raw, ["kind", "deliveryID", "attemptID"]) && !!delivery && !delivery.persisted
-          && (!delivery.attempt || delivery.noCall) && string(raw.attemptID) && !attempts.has(raw.attemptID)
-        if (valid) attempts.add(raw.attemptID as string)
-        break
-      case "delivery-no-call":
-        valid = exact(raw, ["kind", "deliveryID", "attemptID"]) && !!delivery && !delivery.persisted
-          && !delivery.noCall && delivery.attempt === raw.attemptID && string(raw.attemptID)
-        break
-      case "delivery-persisted":
-        valid = exact(raw, ["kind", "deliveryID", "messageID"]) && !!delivery && !delivery.persisted
-          && !!delivery.attempt && !delivery.noCall && delivery.intent.messageID === raw.messageID
-        break
-    }
-    if (!valid) fail("runtime receipt/proof transition is invalid")
-    entries.push(raw as RuntimeReceipt)
-  }
-  return { version: 1, entries }
+function storageBinding(binding: Binding): StorageBinding {
+  return { kind: "opencode-debate-storage", version: 1, project: binding.project,
+    directory: binding.directory, owner: binding.owner, agent: binding.agent }
 }
+
 function sameModel(value: unknown, expected: Model): boolean {
   return object(value) && value.providerID === expected.providerID
     && (value.id ?? value.modelID) === expected.modelID
     && (value.variant === "default" ? undefined : value.variant) === expected.variant
+}
+
+const DIGEST = /^[a-f0-9]{64}$/
+function exactKeys(value: RecordValue, required: readonly string[]): boolean {
+  return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => required.includes(key))
+}
+function legacySource(value: unknown): value is { storeID: string; revision: number; head: string; digest: string } {
+  return object(value) && exactKeys(value, ["storeID", "revision", "head", "digest"])
+    && typeof value.storeID === "string" && value.storeID.length > 0
+    && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1
+    && typeof value.head === "string" && value.head.length > 0
+    && typeof value.digest === "string" && DIGEST.test(value.digest)
+}
+
+function migrationMarker(child: RecordValue, owner: Owner, project: string): NativeMigrationMarker | undefined {
+  if (!object(child.metadata) || !Object.hasOwn(child.metadata, MIGRATION_KEY)) return undefined
+  const marker = child.metadata[MIGRATION_KEY]
+  if (!object(marker) || !exactKeys(marker, ["kind", "version", "privateOwnerKey", "source", "private", "token"])
+    || marker.kind !== "opencode-debate-migrated" || marker.version !== 1
+    || marker.privateOwnerKey !== privateOwnerKey(project, owner)
+    || !legacySource(marker.source) || marker.source.storeID !== child.id
+    || !object(marker.private) || !exactKeys(marker.private, ["revision", "digest"])
+    || !Number.isSafeInteger(marker.private.revision) || (marker.private.revision as number) < 1
+    || typeof marker.private.digest !== "string" || !DIGEST.test(marker.private.digest)
+    || typeof marker.token !== "string" || !DIGEST.test(marker.token)) {
+    fail("native migration marker is corrupt")
+  }
+  return {
+    kind: "opencode-debate-migrated",
+    version: 1,
+    privateOwnerKey: marker.privateOwnerKey,
+    source: { ...(marker.source as NativeMigrationMarker["source"]) },
+    private: { revision: marker.private.revision as number, digest: marker.private.digest },
+    token: marker.token,
+  }
 }
 
 export function automaticParticipantMarker(owner: Owner, project: string, agent: string) {
@@ -188,7 +144,7 @@ export function assertAutomaticParticipantMarker(value: unknown, owner: Owner, p
 
 /** Native history store only. Call under the retained runtime's per-owner lock. */
 export function createCheckpointStore(input: PluginInput, parseState: (value: unknown) => ConversationState,
-  retainedRefusals: (owner: Owner) => readonly RefusedInvocation[] = () => []) {
+  retainedRefusals: (owner: Owner) => readonly RefusedInvocation[] = () => []): NativeCheckpointStore {
   const stores = new Map<string, Store>()
   const failedRecovery = new Set<string>()
 
@@ -200,6 +156,10 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
       if (!object(child) || child.id !== listed.id || child.parentID !== owner.sessionID
         || child.projectID !== input.project.id || child.directory !== resolve(owner.directory)) fail("child evidence binding is invalid")
       if (child.metadata !== undefined && !object(child.metadata)) fail("child metadata evidence is corrupt")
+      if (object(child.metadata) && Object.hasOwn(child.metadata, MIGRATION_KEY)
+        || object(listed.metadata) && Object.hasOwn(listed.metadata, MIGRATION_KEY)) {
+        fail("store is missing with native migration marker evidence; refusing initialisation")
+      }
       // A corrupt/present marker never falls through as unrelated. Re-read the
       // native child, not its mutable title, to validate persisted provenance.
       if (object(child.metadata) && Object.hasOwn(child.metadata, AUTOMATIC_PARTICIPANT_KEY)
@@ -300,7 +260,7 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
     return known ?? { sessionID: value.id, binding: marker as Binding, head: null, revision: 0, loaded: false }
   }
 
-  async function discover(owner: Owner, context?: { agent: string; model: Model }, invocation?: CurrentInvocation): Promise<{ store?: Store; created: boolean }> {
+  async function locate(owner: Owner): Promise<{ children: unknown[]; store?: Store; child?: RecordValue }> {
     if (failedRecovery.has(owner.sessionID)) fail("recovery/creation outcome remains unconfirmed; refusing initialisation")
     const known = stores.get(owner.sessionID)
     if (known?.failed) fail(`store remains unconfirmed: ${known.failed}`)
@@ -308,17 +268,25 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
       query: { directory: input.directory } }), "store discovery")
     if (!Array.isArray(children) || children.some((child) => !object(child))) fail("store discovery is invalid")
     const candidates = children.filter((child) => object(child) && (child.title === TITLE
-      || object(child.metadata) && Object.hasOwn(child.metadata, KEY) || child.id === known?.sessionID))
+      || object(child.metadata) && (Object.hasOwn(child.metadata, KEY) || Object.hasOwn(child.metadata, MIGRATION_KEY))
+      || child.id === known?.sessionID))
     if (candidates.length > 1) fail("store discovery is ambiguous: multiple storage children")
-    if (candidates.length === 1) {
-      const child = data(await input.client.session.get({ path: { id: String((candidates[0] as RecordValue).id) },
-        query: { directory: input.directory } }), "store identity lookup")
-      const store = validateSession(child, owner, known)
-      stores.set(owner.sessionID, store)
-      return { store, created: false }
+    if (candidates.length === 0) return { children }
+    const child = data(await input.client.session.get({ path: { id: String((candidates[0] as RecordValue).id) },
+      query: { directory: input.directory } }), "store identity lookup")
+    const store = validateSession(child, owner, known)
+    return { children, store, child: child as RecordValue }
+  }
+
+  async function discover(owner: Owner, context?: { agent: string; model: Model }, invocation?: CurrentInvocation): Promise<{ store?: Store; created: boolean }> {
+    const known = stores.get(owner.sessionID)
+    const located = await locate(owner)
+    if (located.store) {
+      stores.set(owner.sessionID, located.store)
+      return { store: located.store, created: false }
     }
     if (known) fail("known store was deleted or is missing; refusing recreation")
-    await checkAbsentEvidence(owner, children, invocation)
+    await checkAbsentEvidence(owner, located.children, invocation)
     if (!context) return { created: false } // Initialisation opportunity, never a recovered empty snapshot.
     const binding: Binding = { kind: "opencode-debate-store", version: 1, owner: owner.sessionID,
       project: input.project.id, directory: resolve(owner.directory), nonce: randomUUID().replaceAll("-", ""),
@@ -369,7 +337,8 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
     if (state.discussions.some((discussion) => discussion.owner.sessionID !== store.binding.owner || discussion.owner.agent !== store.binding.agent
       || resolve(discussion.owner.directory) !== store.binding.directory)) fail("state contains a foreign discussion owner")
     return { messageID: info.id, revision: payload.revision as number, previous: payload.previous as string | null,
-      digest: (wrapper as { digest: string }).digest, state, runtimeProof: parseJournal(payload.runtimeProof, state, store.binding) }
+      digest: (wrapper as { digest: string }).digest, state,
+      runtimeProof: parseRuntimeJournal(payload.runtimeProof, state, storageBinding(store.binding)) }
   }
 
   async function history(store: Store, allowEmpty = false): Promise<Checkpoint | undefined> {
@@ -395,10 +364,7 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
       }
       ids.add(record.messageID)
       previous = record.messageID
-      if (proof && (!record.runtimeProof || record.runtimeProof.entries.length < proof.entries.length
-        || JSON.stringify(record.runtimeProof.entries.slice(0, proof.entries.length)) !== JSON.stringify(proof.entries))) {
-        fail("runtime proof receipt prefix was removed or changed")
-      }
+      assertRuntimeProofPrefix(proof, record.runtimeProof)
       proof = record.runtimeProof
       if (!record.runtimeProof) for (const item of record.state.outbox) legacyOutboxIDs.add(item.id)
     }
@@ -406,7 +372,156 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
     return { ...head, legacyOutboxIDs: [...legacyOutboxIDs] }
   }
 
+  async function directChild(owner: Owner, storeID: string): Promise<RecordValue | undefined> {
+    let response: unknown
+    try {
+      response = await input.client.session.get({ path: { id: storeID }, query: { directory: input.directory } })
+    } catch (error) {
+      if (notFound(error)) return undefined
+      fail("native source lookup failed")
+    }
+    if (notFound(response)) return undefined
+    if (!object(response) || response.error !== undefined && response.error !== null) {
+      fail("native source lookup failed")
+    }
+    if (response.data === undefined || response.data === null) fail("native source lookup returned no data")
+    if (!object(response.data)) fail("native source lookup is invalid")
+    return response.data
+  }
+
   return {
+    probe: async (owner: Owner) => {
+      const located = await locate(owner)
+      if (!located.store) return undefined
+      const marker = migrationMarker(located.child as RecordValue, owner, input.project.id)
+      return { storeID: located.store.sessionID, ...(marker === undefined ? {} : { migration: marker }) }
+    },
+    inspect: async (owner: Owner, invocation?: CurrentInvocation): Promise<NativeCheckpointHead | undefined> => {
+      const located = await locate(owner)
+      if (!located.store) {
+        await checkAbsentEvidence(owner, located.children, invocation)
+        return undefined
+      }
+      const head = await history(located.store)
+      if (!head) fail("state is missing")
+      const marker = migrationMarker(located.child as RecordValue, owner, input.project.id)
+      return {
+        storeID: located.store.sessionID,
+        revision: head.revision,
+        head: head.messageID,
+        digest: head.digest,
+        snapshot: structuredClone({ state: head.state, runtimeProof: head.runtimeProof, legacyOutboxIDs: head.legacyOutboxIDs }),
+        ...(marker === undefined ? {} : { migration: marker }),
+      }
+    },
+    inspectExact: async (owner: Owner, storeID: string): Promise<NativeCheckpointHead | undefined> => {
+      if (typeof storeID !== "string" || storeID.length === 0) fail("store identity is invalid")
+      const direct = await directChild(owner, storeID)
+      if (!direct) return undefined
+      const store = validateSession(direct, owner, stores.get(owner.sessionID))
+      if (store.sessionID !== storeID) fail("store identity changed")
+      const head = await history(store)
+      if (!head) fail("state is missing")
+      const marker = migrationMarker(direct, owner, input.project.id)
+      return {
+        storeID: store.sessionID,
+        revision: head.revision,
+        head: head.messageID,
+        digest: head.digest,
+        snapshot: structuredClone({ state: head.state, runtimeProof: head.runtimeProof, legacyOutboxIDs: head.legacyOutboxIDs }),
+        ...(marker === undefined ? {} : { migration: marker }),
+      }
+    },
+
+    markMigrated: async (owner: Owner, marker: NativeMigrationMarker, expected: LegacySource): Promise<void> => {
+      if (!legacySource(expected)) fail("expected migration source is invalid")
+      if (!object(marker) || marker.kind !== "opencode-debate-migrated" || marker.version !== 1
+        || marker.privateOwnerKey !== privateOwnerKey(input.project.id, owner)
+        || !legacySource(marker.source) || !sameSource(marker.source, expected)
+        || !object(marker.private) || !exactKeys(marker.private, ["revision", "digest"])
+        || marker.private.revision !== 1 || typeof marker.private.digest !== "string"
+        || !DIGEST.test(marker.private.digest) || typeof marker.token !== "string" || !DIGEST.test(marker.token)) {
+        fail("native migration marker is invalid")
+      }
+      const located = await locate(owner)
+      if (!located.store || !located.child) fail("store is missing; cannot record migration evidence")
+      const head = await history(located.store)
+      if (!head) fail("state is missing")
+      if (head.revision !== expected.revision || head.messageID !== expected.head || head.digest !== expected.digest
+        || located.store.sessionID !== expected.storeID) {
+        fail("native source changed before the migration marker was written")
+      }
+      const existing = migrationMarker(located.child, owner, input.project.id)
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(marker)) fail("native migration marker conflicts with the requested evidence")
+        return
+      }
+      const beforeMetadata = object(located.child.metadata) ? located.child.metadata : {}
+      const metadata: RecordValue = { ...beforeMetadata, [MIGRATION_KEY]: marker }
+      // The compatibility-floor SDK typings expose only title updates; native
+      // OpenCode preserves the metadata body, and the fixture verifies that shape.
+      const updateSession = input.client.session.update as unknown as (request: {
+        path: { id: string }
+        query: { directory: string }
+        body: { metadata: RecordValue }
+      }) => Promise<unknown>
+      const updated = data(await updateSession({
+        path: { id: located.store.sessionID },
+        query: { directory: input.directory },
+        body: { metadata },
+      }), "migration marker update")
+      if (!object(updated) || updated.id !== located.store.sessionID) fail("migration marker update returned a different session")
+      const readBack = data(await input.client.session.get({
+        path: { id: located.store.sessionID },
+        query: { directory: input.directory },
+      }), "migration marker read-back")
+      if (!object(readBack) || readBack.id !== located.store.sessionID) fail("migration marker read-back is invalid")
+      const readMarker = migrationMarker(readBack, owner, input.project.id)
+      if (!readMarker || JSON.stringify(readMarker) !== JSON.stringify(marker)) fail("migration marker did not verify")
+      const afterMetadata = object(readBack.metadata) ? readBack.metadata : {}
+      for (const key of Object.keys(beforeMetadata)) {
+        if (key === MIGRATION_KEY) continue
+        if (!Object.hasOwn(afterMetadata, key)
+          || JSON.stringify(afterMetadata[key]) !== JSON.stringify(beforeMetadata[key])) {
+          fail("migration marker write changed unrelated checkpoint metadata")
+        }
+      }
+    },
+
+    delete: async (owner: Owner, expected: LegacySource): Promise<void> => {
+      if (!legacySource(expected)) fail("expected deletion source is invalid")
+      const direct = await directChild(owner, expected.storeID)
+      if (!direct) return // A direct definitive 404 is the only accepted absence proof.
+      const store = validateSession(direct, owner, stores.get(owner.sessionID))
+      if (store.sessionID !== expected.storeID) fail("native store identity changed before deletion")
+      const marker = migrationMarker(direct, owner, input.project.id)
+      if (!marker || !sameSource(marker.source, expected)) {
+        fail("native migration marker does not match the source deletion intent")
+      }
+      const head = await history(store)
+      if (!head) fail("state is missing")
+      if (head.revision !== expected.revision || head.messageID !== expected.head || head.digest !== expected.digest) {
+        fail("native source changed before deletion")
+      }
+      const located = await locate(owner)
+      if (!located.store || located.store.sessionID !== expected.storeID) {
+        fail("native store discovery changed before deletion")
+      }
+      let response: unknown
+      try {
+        response = await input.client.session.delete({
+          path: { id: expected.storeID },
+          query: { directory: input.directory },
+        })
+      } catch {
+        fail("native source deletion failed or its outcome is unconfirmed")
+      }
+      const deleted = data(response, "source deletion")
+      if (deleted !== true) fail("native source deletion was not acknowledged")
+      const after = await directChild(owner, expected.storeID)
+      if (after) fail("native source deletion was not confirmed by a definitive not-found")
+    },
+
     load: async (owner: Owner, invocation?: CurrentInvocation): Promise<CheckpointSnapshot | undefined> => {
       let store: Store | undefined
       try {
@@ -431,11 +546,8 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
       if ((current?.messageID ?? null) !== store.head) fail("head changed by an independent writer; refusing stale save")
       const revision = store.revision + 1
       if (!Number.isSafeInteger(revision)) fail("revision overflow")
-      parseJournal(snapshot.runtimeProof, snapshot.state, store.binding)
-      if (current?.runtimeProof && (!snapshot.runtimeProof || snapshot.runtimeProof.entries.length < current.runtimeProof.entries.length
-        || JSON.stringify(snapshot.runtimeProof.entries.slice(0, current.runtimeProof.entries.length)) !== JSON.stringify(current.runtimeProof.entries))) {
-        fail("runtime proof prefix cannot be overwritten by a stale writer")
-      }
+      parseRuntimeJournal(snapshot.runtimeProof, snapshot.state, storageBinding(store.binding))
+      assertRuntimeProofPrefix(current?.runtimeProof, snapshot.runtimeProof)
       const messageID = `${idPrefix(store)}${randomUUID().replaceAll("-", "")}`
       const payload = JSON.stringify({ kind: "opencode-debate-checkpoint", version: 1, messageID,
         sessionID: store.sessionID, nonce: store.binding.nonce, owner: store.binding.owner,

@@ -197,7 +197,7 @@ function gate() {
 
 test("validates ownership against root session, current agent and directory", async () => {
   const { input, requests } = makeInput()
-  const runtime: Runtime = createRuntime(input)
+  const runtime: Runtime = createRuntime(input, { storage: "native" })
 
   await runtime.assertOwner(owner)
 
@@ -214,7 +214,7 @@ test("owner validation retains ordered tool permission overrides for effective d
   ]
   const { input } = makeInput({ agents: [{ name: owner.agent, mode: "primary", permission: effectiveRules }] })
 
-  assert.deepEqual(await createRuntime(input).assertOwner(owner), { agent: effectiveRules, session: [] })
+  assert.deepEqual(await createRuntime(input, { storage: "native" }).assertOwner(owner), { agent: effectiveRules, session: [] })
 
   const sessionRule: Rule = { permission: "auto_debate", pattern: "*", action: "deny" }
   const sessionInput = makeInput({
@@ -222,7 +222,7 @@ test("owner validation retains ordered tool permission overrides for effective d
       permission: [sessionRule] },
     agents: [{ name: owner.agent, mode: "primary", permission: effectiveRules }],
   })
-  assert.deepEqual(await createRuntime(sessionInput.input).assertOwner(owner), { agent: effectiveRules, session: [sessionRule] })
+  assert.deepEqual(await createRuntime(sessionInput.input, { storage: "native" }).assertOwner(owner), { agent: effectiveRules, session: [sessionRule] })
 })
 
 test("rejects child sessions, cross-directory access and agent mismatches", async () => {
@@ -232,7 +232,7 @@ test("rejects child sessions, cross-directory access and agent mismatches", asyn
     { id: owner.sessionID, projectID: "project-1", directory: owner.directory, agent: "different-agent" },
   ]) {
     const { input } = makeInput({ session })
-    await assert.rejects(createRuntime(input).assertOwner(owner), /owner|session|directory|agent/i)
+    await assert.rejects(createRuntime(input, { storage: "native" }).assertOwner(owner), /owner|session|directory|agent/i)
   }
 })
 
@@ -242,7 +242,7 @@ test("rejects an owner session that is absent or belongs to another project", as
     { id: owner.sessionID, projectID: "other-project", directory: owner.directory, agent: owner.agent },
   ]) {
     const { input } = makeInput({ session })
-    await assert.rejects(createRuntime(input).assertOwner(owner), /owner|session|project/i)
+    await assert.rejects(createRuntime(input, { storage: "native" }).assertOwner(owner), /owner|session|project/i)
   }
 })
 
@@ -258,18 +258,18 @@ test("rejects the manual debate coordinator and non-primary agents", async () =>
     },
     agents: [{ name: "debate", mode: "primary", permission: [] }],
   })
-  await assert.rejects(createRuntime(coordinator.input).assertOwner({ ...owner, agent: "debate" }), /coordinator|owner/i)
+  await assert.rejects(createRuntime(coordinator.input, { storage: "native" }).assertOwner({ ...owner, agent: "debate" }), /coordinator|owner/i)
 
   const participant = makeInput({ agents: [{ name: owner.agent, mode: "subagent", permission: [] }] })
-  await assert.rejects(createRuntime(participant.input).assertOwner(owner), /primary|participant/i)
+  await assert.rejects(createRuntime(participant.input, { storage: "native" }).assertOwner(owner), /primary|participant/i)
 })
 
 test("fails closed when owner or effective permission data cannot be fetched", async () => {
   const failedSession = makeInput({ sessionGetError: new Error("session unavailable") })
-  await assert.rejects(createRuntime(failedSession.input).assertOwner(owner), /session/i)
+  await assert.rejects(createRuntime(failedSession.input, { storage: "native" }).assertOwner(owner), /session/i)
 
   const failedAgents = makeInput({ agentsError: new Error("agents unavailable") })
-  const runtime = createRuntime(failedAgents.input)
+  const runtime = createRuntime(failedAgents.input, { storage: "native" })
   await assert.rejects(runtime.restrictions(owner), /agent|permission/i)
 
   const malformedRules = makeInput({ agents: [{
@@ -277,7 +277,7 @@ test("fails closed when owner or effective permission data cannot be fetched", a
     mode: "primary",
     permission: [{ permission: "read", pattern: "*", action: "permit" }],
   }] })
-  await assert.rejects(createRuntime(malformedRules.input).restrictions(owner), /permission|rule/i)
+  await assert.rejects(createRuntime(malformedRules.input, { storage: "native" }).restrictions(owner), /permission|rule/i)
 })
 
 test("returns effective owner and session deny/ask rules but not allows", async () => {
@@ -295,7 +295,7 @@ test("returns effective owner and session deny/ask rules but not allows", async 
     },
   })
 
-  assert.deepEqual(await createRuntime(input).restrictions(owner), [
+  assert.deepEqual(await createRuntime(input, { storage: "native" }).restrictions(owner), [
     { permission: "read", pattern: "*.env", action: "deny" },
     { permission: "edit", pattern: "private/**", action: "ask" },
   ])
@@ -304,7 +304,7 @@ test("returns effective owner and session deny/ask rules but not allows", async 
 
 test("creates an explicitly permissioned participant child with its model and variant", async () => {
   const { input, requests } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await runtime.createParticipant(owner, {
     agent: "debate-openai",
     description: "neutral participant",
@@ -337,7 +337,7 @@ test("creates an explicitly permissioned participant child with its model and va
 
 test("returns only matching final assistant text and sends participant model selection", async () => {
   const { input, requests } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
 
   assert.equal(await runtime.prompt(member, "produce JSON"), "final answer")
@@ -390,7 +390,7 @@ test("reads the final assistant response for a prompt when the returned message 
       },
     ],
   })
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
 
   assert.equal(await runtime.prompt(await createMember(runtime), "prompt after tool step"), "completed final answer")
   assert.ok(requests.some(({ method }) => method === "session.messages"))
@@ -398,7 +398,7 @@ test("reads the final assistant response for a prompt when the returned message 
 
 test("propagates SDK errors instead of accepting a successful HTTP envelope", async () => {
   const { input } = makeInput({ promptError: new Error("provider request failed") })
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   await assert.rejects(runtime.prompt(await createMember(runtime), "prompt"), /participant prompt.*failed/i)
 })
 
@@ -407,14 +407,14 @@ test("rejects successful HTTP responses containing malformed or non-matching mes
     info: { id: "message", sessionID: "another-session", role: "assistant" },
     parts: [{ id: "part", type: "text", text: "not this session" }],
   } })
-  const runtime = createRuntime(malformed.input)
+  const runtime = createRuntime(malformed.input, { storage: "native" })
   await assert.rejects(runtime.prompt(await createMember(runtime), "prompt"), /assistant|message|text/i)
 
   const apiError = makeInput({ createResult: undefined })
   const { input } = apiError
   const typedClient = input.client as unknown as { session: { create: (request: unknown) => Promise<unknown> } }
   typedClient.session.create = async () => ({ data: undefined, error: new Error("HTTP error") })
-  await assert.rejects(createRuntime(input).createParticipant(owner, {
+  await assert.rejects(createRuntime(input, { storage: "native" }).createParticipant(owner, {
     agent: "debate-openai", description: "neutral", model: "fake/fake-model",
   }, []), /create|session/i)
 })
@@ -426,7 +426,7 @@ test("preserves unrelated session metadata while loading and saving its own stat
     outbox: [],
   }
   const f = checkpointClient()
-  const runtime = createRuntime(f.input)
+  const runtime = createRuntime(f.input, { storage: "native" })
   await runtime.save(f.owner, saved)
   assert.deepEqual(await runtime.load(f.owner), saved)
   assert.deepEqual(f.sessions.get(f.owner.sessionID)?.metadata, { unrelated: { retained: true } })
@@ -449,7 +449,7 @@ test("participant creation rejects lost or substituted ownership metadata before
       }
       return response
     }
-    await assert.rejects(createRuntime(f.input).createParticipant(f.owner, {
+    await assert.rejects(createRuntime(f.input, { storage: "native" }).createParticipant(f.owner, {
       agent: "debate-openai", description: "automatic", model: "fake/fake-model",
     }, []), /marker|binding|ownership|participant/i)
     assert.equal(f.calls.some((call) => call.method === "prompt"), false)
@@ -495,18 +495,18 @@ test("rejects corrupt nested checkpoint state before writing partially trusted d
     },
   })
 
-  await assert.rejects(createRuntime(input).save(owner, state as unknown as ConversationState), /state.*invalid|unsupported/i)
+  await assert.rejects(createRuntime(input, { storage: "native" }).save(owner, state as unknown as ConversationState), /state.*invalid|unsupported/i)
 })
 
 test("uses native idle state and refuses parent delivery when the parent is busy", async () => {
   const idle = makeInput()
-  assert.equal(await createRuntime(idle.input).parentIdle(owner), true)
+  assert.equal(await createRuntime(idle.input, { storage: "native" }).parentIdle(owner), true)
 
   const omittedIdle = makeInput({ status: {} })
-  assert.equal(await createRuntime(omittedIdle.input).parentIdle(owner), true)
+  assert.equal(await createRuntime(omittedIdle.input, { storage: "native" }).parentIdle(owner), true)
 
   const busy = makeInput({ status: { [owner.sessionID]: { type: "busy" } } })
-  assert.equal(await createRuntime(busy.input).parentIdle(owner), false)
+  assert.equal(await createRuntime(busy.input, { storage: "native" }).parentIdle(owner), false)
 })
 
 test("asynchronously delivers only into an idle owner session and returns its persisted message ID", async () => {
@@ -528,7 +528,7 @@ test("asynchronously delivers only into an idle owner session and returns its pe
 const makeDeliveryInput = async () => {
   const f = checkpointClient()
   f.sessions.get(f.owner.sessionID)!.model = { providerID: "fake", id: "fake-model", variant: "careful" }
-  const runtime = createRuntime(f.input)
+  const runtime = createRuntime(f.input, { storage: "native" })
   await runtime.load(f.owner)
   await runtime.save(f.owner, { version: 1, discussions: [{ id: "delivery-discussion", owner: f.owner,
     config: { enabled: false, maxRounds: 3, persistTranscripts: false },
@@ -585,7 +585,7 @@ test("delivery exhausts its existing not-found polling guard rather than claimin
 
 test("stop fences a prompt synchronously registered before its participant lookup", { timeout: 2000 }, async () => {
   const { input, requests, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   const lookup = gate()
   const entered = gate()
@@ -619,7 +619,7 @@ test("stop fences a prompt synchronously registered before its participant looku
 
 test("idle and abort acknowledgement cannot confirm while an owned native request is still starting", { timeout: 2000 }, async () => {
   const { input, requests, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   const startup = gate()
   const dispatched = gate()
@@ -663,7 +663,7 @@ test("a returned intermediate tool step and idle sample do not settle an unfinis
     info: { id: "tool-step", parentID: "submitted-user-message", sessionID: "child-session", role: "assistant", finish: "tool-calls" },
     parts: [{ type: "tool", tool: "webfetch", sessionID: "child-session", messageID: "tool-step", state: { status: "running" } }],
   } })
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   const inspected = gate()
   const messages = session.messages
@@ -692,7 +692,7 @@ test("a returned intermediate tool step and idle sample do not settle an unfinis
 
 test("lost transport leaves cancellation unconfirmed and the participant fenced", async () => {
   const { input, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   session.prompt = async () => { throw new Error("transport lost before response") }
   await assert.rejects(runtime.prompt(member, "dispatched but unknown"), /transport lost/)
@@ -702,16 +702,16 @@ test("lost transport leaves cancellation unconfirmed and the participant fenced"
 
 test("recovery cannot confirm cessation or resume a participant owned by another adapter instance", async () => {
   const { input } = makeInput()
-  const previous = createRuntime(input)
+  const previous = createRuntime(input, { storage: "native" })
   const member = await createMember(previous)
-  const recovered = createRuntime(input)
+  const recovered = createRuntime(input, { storage: "native" })
   await assert.rejects(recovered.abort(member), /unknown|owned|verif|recover/i)
   await assert.rejects(recovered.prompt(member, "unknown pending native start"), /unknown|owned|recover/i)
 })
 
 test("concurrent prompts cannot introduce an untracked start for one participant", { timeout: 2000 }, async () => {
   const { input, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   const pending = gate()
   const dispatched = gate()
@@ -734,7 +734,7 @@ test("concurrent prompts cannot introduce an untracked start for one participant
 
 test("failed cessation verification preserves the stopping fence and can be retried", async () => {
   const { input, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   const abort = session.abort
   session.abort = async () => response(false)
@@ -747,7 +747,7 @@ test("failed cessation verification preserves the stopping fence and can be retr
 
 test("an incomplete native assistant prevents cessation despite idle and an abort acknowledgement", { timeout: 2000 }, async () => {
   const { input, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   await runtime.prompt(member, "completed original turn")
   const messages = session.messages
@@ -775,7 +775,7 @@ test("an incomplete native assistant prevents cessation despite idle and an abor
 
 test("late reconciliation re-verifies cessation instead of reusing a stale successful stop", async () => {
   const { input, session } = makeInput()
-  const runtime = createRuntime(input)
+  const runtime = createRuntime(input, { storage: "native" })
   const member = await createMember(runtime)
   await runtime.abort(member)
   session.messages = async () => response([{ info: { id: "foreign-pending-message", sessionID: member.sessionID,

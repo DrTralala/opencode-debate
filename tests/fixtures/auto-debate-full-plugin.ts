@@ -7,7 +7,8 @@ import { createConnection, createServer as createNetServer } from "node:net"
 import { dirname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { createOpencodeClient } from "@opencode-ai/sdk"
-import { isolatedEnvironment } from "./auto-debate-runtime.ts"
+import { privateOwnerKey } from "../../src/auto-debate/private-store.ts"
+import { isReviewedNativeVersion, isolatedEnvironment } from "./auto-debate-runtime.ts"
 
 type RecordValue = Record<string, unknown>
 type NativeClient = ReturnType<typeof createOpencodeClient>
@@ -250,7 +251,7 @@ function providerServer(options: {
       const prompt = lastUserText(requestBody.messages)
       const rootID = options.ownerID()
       if (rootID && sessionID === rootID || options.ownerIDs?.has(sessionID)) {
-        const marker = /^TASK6_E2E_[A-Z_]+/u.exec(prompt)?.[0] ?? "TASK6_E2E_OTHER"
+        const marker = /^TASK6_E2E_[A-Z0-9_]+/u.exec(prompt)?.[0] ?? "TASK6_E2E_OTHER"
         const stage = (options.observations.parentCalls.get(marker) ?? 0) + 1
         options.observations.parentCalls.set(marker, stage)
         const action = options.actions.get(marker)
@@ -263,7 +264,7 @@ function providerServer(options: {
           writeCompletion(response, requestBody, "", [toolCall("auto_debate", action, marker)])
           return
         }
-        if (marker === "TASK6_E2E_REPORT_LINKS" && stage > 1) {
+        if (marker.startsWith("TASK6_E2E_REPORT_LINKS") && stage > 1) {
           const paths = pathsInToolResults(requestBody.messages)
           options.observations.reportPaths = paths
           writeCompletion(response, requestBody, paths.length === 2
@@ -398,6 +399,19 @@ function discussionSummaries(messages: readonly RecordValue[]): RecordValue[] {
 
 function statusOf(summary: RecordValue | undefined): string | undefined {
   return summary && typeof summary.status === "string" ? summary.status : undefined
+}
+
+export function latestTranscriptOutcome(markdown: string): { status: string; cycle: number } | undefined {
+  const marker = "## Current outcome"
+  const start = markdown.lastIndexOf(marker)
+  if (start < 0) return undefined
+  const remainder = markdown.slice(start + marker.length)
+  const nextHeading = remainder.search(/\r?\n## /u)
+  const block = nextHeading < 0 ? remainder : remainder.slice(0, nextHeading)
+  const status = /^\*\*Status:\*\* (.+)$/mu.exec(block)?.[1]?.trim()
+  const cycleText = /^\*\*Current cycle:\*\* (\d+)$/mu.exec(block)?.[1]
+  if (!status || cycleText === undefined) return undefined
+  return { status, cycle: Number(cycleText) }
 }
 
 function startIDs(messages: readonly RecordValue[]): string[] {
@@ -547,7 +561,7 @@ export default async function Task6FullPlugin(input, options) {
     const binary = environment.OPENCODE_BIN ?? "opencode"
     execFileSync("git", ["init", "--quiet"], { cwd: projectDirectory, env: environment, timeout: 10_000 })
     version = execFileSync(binary, ["--version"], { cwd: projectDirectory, env: environment, encoding: "utf8", timeout: 10_000 }).trim()
-    if (version !== "1.18.35") throw new Error(`Unreviewed Task 6 native runtime version: ${version}`)
+    if (!isReviewedNativeVersion(version)) throw new Error(`Unreviewed Task 6 native runtime version: ${version}`)
 
     stage = "loopback fake-provider startup"
     const createdProvider = await providerServer({ providerURL, ownerID: () => ownerID,
@@ -601,16 +615,33 @@ export default async function Task6FullPlugin(input, options) {
         && command.name === "debate-auto")
     assert.equal(fullPluginWasLoaded, true, "the imported full plugin must register its private agents and command")
 
-    const control = async (arguments_: string): Promise<RecordValue> => {
+    const controlOnce = async (arguments_: string): Promise<RecordValue> => {
       const output = responseData<RecordValue>(await client.session.command({
         path: { id: ownerID! }, query: { directory: projectDirectory }, body: { command: "debate-auto", arguments: arguments_ },
       }), `/${"debate-auto"} ${arguments_}`)
       return output
     }
-    const promptRoot = async (marker: string, action?: ParentAction): Promise<RecordValue[]> => {
+    // The maintenance guard can transiently reject a user action while a
+    // terminal transition is being compacted. These retries model a user acting
+    // once more after the guard releases; they do not accept a failed result.
+    const control = async (arguments_: string): Promise<RecordValue> => {
+      let output = await controlOnce(arguments_)
+      for (let attempt = 0; attempt < 8 && JSON.stringify(output).includes("maintenance is in progress"); attempt++) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+        output = await controlOnce(arguments_)
+      }
+      return output
+    }
+    const promptRootOnce = async (marker: string, action?: ParentAction): Promise<RecordValue[]> => {
       if (action) actions.set(marker, action)
       const messageID = `msg_${randomUUID().replaceAll("-", "")}`
       const previousCount = observations.parentCalls.get(marker) ?? 0
+      // OpenCode 1.19.4 can mark the assistant message finished before the tool
+      // result is appended to history. Wait for the newly dispatched tool part to
+      // reach a terminal state, not merely for the assistant envelope.
+      const toolCountBefore = action
+        ? toolParts(await nativeMessages(client, projectDirectory, ownerID!)).length
+        : 0
       const dispatched = await client.session.promptAsync({
         path: { id: ownerID! }, query: { directory: projectDirectory }, body: {
           messageID, agent: "build", model: { providerID: "probe", modelID: "fake-model" },
@@ -622,8 +653,27 @@ export default async function Task6FullPlugin(input, options) {
         if ((observations.parentCalls.get(marker) ?? 0) < previousCount + (action ? 2 : 1)) return undefined
         if (await nativeStatus(client, projectDirectory, ownerID!) !== "idle") return undefined
         const messages = await nativeMessages(client, projectDirectory, ownerID!)
-        return assistantFinished(messages, messageID) ? messages : undefined
+        if (!assistantFinished(messages, messageID)) return undefined
+        if (action) {
+          const current = toolParts(messages).slice(toolCountBefore)
+          if (current.length === 0 || current.some((part) => !isRecord(part.state)
+            || !["completed", "error"].includes(String(part.state.status)))) return undefined
+        }
+        return messages
       })
+    }
+    const promptRoot = async (marker: string, action?: ParentAction): Promise<RecordValue[]> => {
+      if (!action) return promptRootOnce(marker)
+      let messages = await promptRootOnce(marker, action)
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        const current = toolParts(messages).at(-1)
+        const error = isRecord(current?.state) && current.state.status === "error"
+          ? String(current.state.error) : ""
+        if (!/maintenance is in progress/i.test(error)) return messages
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+        messages = await promptRootOnce(`${marker}_RETRY_${attempt}`, action)
+      }
+      return messages
     }
 
     stage = "conversation control and first real discussion"
@@ -747,6 +797,14 @@ export default async function Task6FullPlugin(input, options) {
       const busy = await nativeStatus(client, projectDirectory, alphaSessions[0])
       return busy === "idle" ? true : undefined
     })
+    // OpenCode 1.19.4 can report the participant idle before the cycle result and
+    // transcript checkpoint are visible. Wait for the saved awaiting-evaluation
+    // state before exercising the terminal evaluation.
+    await waitFor("resumed alpha cycle saved awaiting-evaluation", async () => {
+      const text = await readFile(join(projectDirectory, "docs", "debates", `auto-${alphaID}.md`), "utf8").catch(() => "")
+      const outcome = latestTranscriptOutcome(text)
+      return outcome?.cycle === 2 && outcome.status === "awaiting-evaluation" ? true : undefined
+    })
     stage = "cancel the independent beta discussion"
     const cancelledMessages = await promptRoot("TASK6_E2E_CANCEL_BETA", {
       action: "cancel", discussion_id: betaID, reason: "explicit-stop",
@@ -763,6 +821,10 @@ export default async function Task6FullPlugin(input, options) {
       evaluation: { cycle: 2, conclusion: "Use bounded LRU for this workload, subject to the stated stale-window check.",
         caveats: ["Validate the load estimate before deployment."], rationale: "The focused follow-up addressed the restart trade-off.", next: "act" },
     })
+    const secondEvaluationTool = toolParts(evaluatedSecond).at(-1)
+    assert.ok(secondEvaluationTool && isRecord(secondEvaluationTool.state)
+      && secondEvaluationTool.state.status === "completed",
+      `resumed cycle evaluation did not complete: ${JSON.stringify(secondEvaluationTool?.state)}`)
     const mainAgentEvaluatedBothCycles = discussionSummaries(evaluatedFirst).some((summary) => summary.id === alphaID)
       && discussionSummaries(evaluatedSecond).some((summary) => summary.id === alphaID && statusOf(summary) === "resolved")
 
@@ -774,27 +836,57 @@ export default async function Task6FullPlugin(input, options) {
     const betaTranscriptPath = join(projectDirectory, "docs", "debates", `auto-${betaID}.md`)
     const [alphaTranscript, betaTranscript] = await Promise.all([readFile(alphaTranscriptPath, "utf8"), readFile(betaTranscriptPath, "utf8")])
     const transcriptEntries = await readdir(transcriptDirectory)
+    const reportTextHasBothLinks = reportMessages.some((message) => Array.isArray(message.parts) && message.parts.some((part) => isRecord(part)
+      && part.type === "text" && typeof part.text === "string"
+      && part.text.includes(`docs/debates/auto-${alphaID}.md`) && part.text.includes(`docs/debates/auto-${betaID}.md`)))
+    const reportAlpha = discussionSummaries(reportMessages).find((summary) => summary.id === alphaID)
+    const evaluatedSecondSummary = discussionSummaries(evaluatedSecond).find((summary) => summary.id === alphaID)
+    const alphaLatestOutcome = latestTranscriptOutcome(alphaTranscript)
+    const transcriptLinkDetails = {
+      reportPaths: observations.reportPaths,
+      transcriptPaths,
+      reportTextHasBothLinks,
+      reportAlphaStatus: reportAlpha && statusOf(reportAlpha),
+      reportAlphaPersistence: reportAlpha?.persistence,
+      evaluatedSecondStatus: evaluatedSecondSummary && statusOf(evaluatedSecondSummary),
+      evaluatedSecondPersistence: evaluatedSecondSummary?.persistence,
+      alphaFirstEvaluation: alphaTranscript.includes("Continue only the alpha panel"),
+      alphaSecondEvaluation: alphaTranscript.includes("Use bounded LRU"),
+      alphaFeedback: alphaTranscript.includes(ALPHA_FEEDBACK),
+      alphaEvaluation: alphaTranscript.includes("Main-agent evaluation"),
+      alphaCycleTwo: alphaTranscript.includes("Cycle 2"),
+      alphaRoundsTwo: alphaTranscript.includes("**Rounds completed:** 2"),
+      alphaRoundsOne: alphaTranscript.includes("**Rounds completed:** 1"),
+      alphaConsensusNo: alphaTranscript.includes("**Consensus:** No"),
+      alphaLatestOutcome,
+      alphaResolved: alphaLatestOutcome?.status === "resolved",
+      alphaStatuses: [...alphaTranscript.matchAll(/^\*\*Status:\*\* (.+)$/gmu)].map((match) => match[1]),
+      alphaLifecycle: [...alphaTranscript.matchAll(/^\*\*Lifecycle status:\*\* (.+)$/gmu)].map((match) => match[1]),
+      betaCancelled: betaTranscript.includes("cancelled"),
+      betaDecision: betaTranscript.includes("TASK6_BETA_DECISION"),
+      alphaHasBeta: alphaTranscript.includes("TASK6_BETA_"),
+      betaHasAlpha: betaTranscript.includes("TASK6_ALPHA_"),
+      htmlTranscripts: transcriptEntries.filter((entry) => entry === `auto-${alphaID}.html` || entry === `auto-${betaID}.html`),
+    }
     const transcriptLinksWereReturnedAndRecordsWereSaved = observations.reportPaths.length === 2
       && transcriptPaths.length === 2
       && transcriptPaths.includes(`docs/debates/auto-${alphaID}.md`)
       && transcriptPaths.includes(`docs/debates/auto-${betaID}.md`)
-      && reportMessages.some((message) => Array.isArray(message.parts) && message.parts.some((part) => isRecord(part)
-        && part.type === "text" && typeof part.text === "string"
-        && part.text.includes(`docs/debates/auto-${alphaID}.md`) && part.text.includes(`docs/debates/auto-${betaID}.md`)))
+      && reportTextHasBothLinks
       && alphaTranscript.includes(ALPHA_FEEDBACK)
       && alphaTranscript.includes("Main-agent evaluation")
       && alphaTranscript.includes("Cycle 2")
       && alphaTranscript.includes("**Rounds completed:** 2")
       && alphaTranscript.includes("**Rounds completed:** 1")
       && alphaTranscript.includes("**Consensus:** No")
-      && alphaTranscript.includes("resolved")
+      && alphaLatestOutcome?.status === "resolved"
       && betaTranscript.includes("cancelled")
       && betaTranscript.includes("TASK6_BETA_DECISION")
       && !alphaTranscript.includes("TASK6_BETA_") && !betaTranscript.includes("TASK6_ALPHA_")
       && !transcriptEntries.some((entry) => entry === `auto-${alphaID}.html` || entry === `auto-${betaID}.html`)
       && (await realpath(transcriptDirectory)).startsWith(`${workspace}/`)
     assert.equal(transcriptLinksWereReturnedAndRecordsWereSaved, true,
-      "the parent must return both actual Markdown transcript links and each append-only record must retain only its own discussion")
+      `the parent must return both actual Markdown transcript links and each append-only record must retain only its own discussion: ${JSON.stringify(transcriptLinkDetails)}`)
 
     stage = "reset conversation override"
     const resetResponse = await control("reset")
@@ -807,7 +899,7 @@ export default async function Task6FullPlugin(input, options) {
     assert.equal(resetRestoredConfiguredDefault, true, "reset restores the configured disabled default")
 
     assert.deepEqual(observations.providerErrors, [], "the loopback fake provider must not report unhandled requests")
-    assert.deepEqual(observations.parentToolCalls, ["TASK6_E2E_START_ALPHA", "TASK6_E2E_START_BETA", "TASK6_E2E_START_WHILE_OFF",
+    assert.deepEqual(observations.parentToolCalls.filter((marker) => !marker.includes("_RETRY_")), ["TASK6_E2E_START_ALPHA", "TASK6_E2E_START_BETA", "TASK6_E2E_START_WHILE_OFF",
       "TASK6_E2E_STATUS_CYCLE_ONE", "TASK6_E2E_EVALUATE_ALPHA", "TASK6_E2E_RESUME_ALPHA", "TASK6_E2E_CANCEL_BETA",
       "TASK6_E2E_EVALUATE_ALPHA_CYCLE_TWO", "TASK6_E2E_REPORT_LINKS", "TASK6_E2E_START_AFTER_RESET"])
     assert.equal(observations.participantPrompts.length, 15)
@@ -955,7 +1047,7 @@ export default async function(input, options) {
     const binary = environment.OPENCODE_BIN ?? "opencode"
     execFileSync("git", ["init", "--quiet"], { cwd: projectDirectory, env: environment, timeout: 10_000 })
     const version = execFileSync(binary, ["--version"], { cwd: projectDirectory, env: environment, encoding: "utf8", timeout: 10_000 }).trim()
-    assert.equal(version, "1.18.35")
+    assert.ok(isReviewedNativeVersion(version), `Unreviewed native runtime version: ${version}`)
     provider = providerServer({ providerURL, ownerID: () => undefined, ownerIDs, holdFirstRound: Promise.resolve(), actions, observations,
       holdParticipant: async (prompt) => {
         if (!options.corrective || prompt.cycle !== 1 || prompt.round !== 1 || !prompt.text.includes("TASK6_CORRECTIVE_ACTIVE")) return
@@ -1012,13 +1104,19 @@ export default async function(input, options) {
       return String(part.state.error)
     }
     const journal = async (id: string) => {
-      const store = (await children(id)).find((child) => child.title === "Automatic debate recovery checkpoints v1")
-      assert.ok(store, "native first-use admission must persist its non-running checkpoint child")
-      const messages = await nativeMessages(client, projectDirectory, String(store.id))
-      return messages.map((message) => {
-        const text = String((message.parts as RecordValue[])[0].text)
-        return JSON.parse(JSON.parse(text.slice(text.indexOf("\n") + 1)).payload) as RecordValue
-      }).sort((left, right) => Number(left.revision) - Number(right.revision))
+      const paths = responseData<RecordValue>(await client.path.get({ query: { directory: projectDirectory } }), "private state path")
+      const stateProject = responseData<RecordValue>(await client.project.current({ query: { directory: projectDirectory } }), "project lookup")
+      if (typeof paths.state !== "string" || typeof stateProject.id !== "string") throw new Error("Private state path is unavailable")
+      const directory = join(paths.state, "opencode-debate", "auto-debate", "v2",
+        privateOwnerKey(stateProject.id, { sessionID: id, agent: "build", directory: projectDirectory }))
+      const names = (await readdir(directory)).filter((name) => /^\d{16}\.json$/.test(name)).sort()
+      const records: RecordValue[] = []
+      for (const name of names) {
+        const envelope = JSON.parse(await readFile(join(directory, name), "utf8")) as RecordValue
+        if (typeof envelope.payload !== "string") throw new Error("Private revision payload is invalid")
+        records.push(JSON.parse(envelope.payload) as RecordValue)
+      }
+      return records
     }
     const checkAdmission = async (id: string, messages: RecordValue[]) => {
       const first = (await journal(id))[0]
@@ -1039,6 +1137,8 @@ export default async function(input, options) {
     assert.deepEqual(firstStatus.discussions, [])
     const statusProof = await checkAdmission(statusOwner.id, statusMessages)
     assert.equal(observations.participantPrompts.length, 0)
+    assert.deepEqual(await children(statusOwner.id), [],
+      "a fresh private status action must not create a checkpoint child")
 
     stage = "first config-enabled native start without on"
     const startOwner = await root()
@@ -1053,6 +1153,11 @@ export default async function(input, options) {
     })
     await complete(firstID)
     assert.equal(observations.participantPrompts.filter((prompt) => prompt.discussionID === firstID).length, 6)
+    const startedSessions = [...new Set(observations.participantPrompts
+      .filter((prompt) => prompt.discussionID === firstID)
+      .map((prompt) => prompt.sessionID))].sort()
+    assert.deepEqual((await children(startOwner.id)).map((child) => String(child.id)).sort(), startedSessions,
+      "a fresh private start must create exactly its admitted participant sessions and no checkpoint child")
 
     stage = "actual native patterned ask rejected before any child or dispatch"
     const approvalOwner = await root("approval-main")
@@ -1111,7 +1216,7 @@ export default async function(input, options) {
       assert.ok(approvedDiscussionID, `approved reuse failed: ${JSON.stringify(toolParts(approvedMessages).map((part) => part.state))}`)
       await complete(approvedDiscussionID)
       assert.equal(observations.participantPrompts.filter((prompt) => prompt.discussionID === approvedDiscussionID).length, 6)
-      assert.equal((await children(approvalOwner.id)).length, 4, "one checkpoint and original three participants are admitted only after approval")
+      assert.equal((await children(approvalOwner.id)).length, 3, "only the original three participants are admitted after approval")
       corrective = { refusalThenApproved: true, approvalOwnerID: approvalOwner.id, approvedDiscussionID, approvedPermissionRequest, batches: [] }
     }
 

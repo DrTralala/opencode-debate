@@ -35,6 +35,54 @@ export type Owner = Readonly<{
   directory: string
 }>
 
+export type StorageBinding = Readonly<{
+  kind: "opencode-debate-storage"
+  version: 1
+  project: string
+  directory: string
+  owner: string
+  agent: string
+}>
+
+export type LegacySource = Readonly<{
+  storeID: string
+  revision: number
+  head: string
+  digest: string
+}>
+
+export type MigrationBoundary = Readonly<{
+  kind: "opencode-debate-migration-boundary"
+  version: 1
+  state: "prepared" | "committed" | "retiring" | "retired"
+  project: string
+  directory: string
+  owner: string
+  agent: string
+  source: LegacySource
+  private: { revision: number; digest: string }
+  token: string
+}>
+
+export type NativeMigrationMarker = Readonly<{
+  kind: "opencode-debate-migrated"
+  version: 1
+  privateOwnerKey: string
+  source: LegacySource
+  private: { revision: number; digest: string }
+  token: string
+}>
+
+export type StorageMode = "auto" | "native"
+export type StorageBackend = "native" | "private" | "new-private" | "none"
+
+export type StorageSelection =
+  | { kind: "native" }
+  | { kind: "private" }
+  | { kind: "new-private" }
+  | { kind: "none" }
+  | { kind: "conflict"; reason: string }
+
 export type PanelMember = Readonly<{
   participant: DebateParticipant
   sessionID: string

@@ -4,15 +4,17 @@ import { tool, type Config, type Plugin } from "@opencode-ai/plugin"
 import { replaceParts } from "../debate.ts"
 import type { DebateParticipant, DebateRegistry } from "../participants.ts"
 import { runResponseFormatter } from "../response-formatter.ts"
+import { AUTOMATIC_PARTICIPANT_PREFIX, discussionAudit, discussionSummary } from "./audit.ts"
 import { createManager, type Manager } from "./manager.ts"
 import { MAIN_AGENT_INSTRUCTIONS } from "./prompts.ts"
-import { parseControl } from "./state.ts"
+import { parseControl, type StorageCommand } from "./state.ts"
 import { createRuntime } from "./opencode.ts"
 import { checkpointTranscript } from "./transcripts.ts"
 import type { Brief, Discussion, Evaluation, Owner, OwnerPermissionSnapshot, Rule, Runtime } from "./types.ts"
 
+export { AUTOMATIC_PARTICIPANT_PREFIX }
+
 export const AUTOMATIC_DEBATE_TOOL = "auto_debate"
-export const AUTOMATIC_PARTICIPANT_PREFIX = "opencode-debate-auto-"
 export const AUTOMATIC_DEBATE_COMMAND = "debate-auto"
 
 const MANUAL_COORDINATOR = "debate"
@@ -317,47 +319,6 @@ function checkRuntimeDenials(permissions: OwnerPermissionSnapshot, pattern?: str
   }
 }
 
-function discussionSummary(discussion: Discussion): PlainRecord {
-  const evaluation = discussion.evaluations.find((item) => item.cycle === discussion.cycle)
-  const result = discussion.results.find((item) => item.cycle === discussion.cycle)
-  const persistence = discussion.config.persistTranscripts
-    ? discussion.transcriptError
-      ? { enabled: true, outcome: "unavailable", error: discussion.transcriptError }
-      : discussion.transcriptPath
-        ? { enabled: true, outcome: "saved", path: discussion.transcriptPath }
-        : { enabled: true, outcome: "not-confirmed" }
-    : { enabled: false, outcome: "disabled" }
-  const summary: PlainRecord = {
-    id: discussion.id,
-    status: discussion.status,
-    cycle: discussion.cycle,
-    maxRounds: discussion.config.maxRounds,
-    participants: discussion.panel.map(({ participant }) => participant.agent.startsWith(AUTOMATIC_PARTICIPANT_PREFIX)
-      ? participant.agent.slice(AUTOMATIC_PARTICIPANT_PREFIX.length) : participant.agent),
-    persistence,
-  }
-  if (result && discussion.status === "awaiting-evaluation" && !evaluation) {
-    summary.canonicalFindings = result.turns.map((turn) => ({ ...turn }))
-    summary.result = {
-      status: result.status,
-      reason: result.reason,
-      rounds: result.rounds,
-      consensus: result.consensus,
-      failures: result.failures.map((failure) => ({ ...failure })),
-    }
-  }
-  if (discussion.cancellation) {
-    const cancellation = {
-      confirmed: discussion.cancellation.pendingSessionIDs.length === 0 && discussion.cancellation.errors.length === 0,
-      pendingSessionIDs: [...discussion.cancellation.pendingSessionIDs],
-      errors: [...discussion.cancellation.errors],
-    }
-    if (!cancellation.confirmed) summary.unconfirmedCancellation = cancellation
-    else summary.cancellation = cancellation
-  }
-  return summary
-}
-
 function toolResult(value: PlainRecord): { title: string; output: string; metadata: PlainRecord } {
   return { title: "Automatic debate", output: JSON.stringify(value), metadata: value }
 }
@@ -379,14 +340,18 @@ function conciseReminder(discussions: readonly Discussion[]): string {
 export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
   const prepared = managerRegistry(registry)
   return async (input) => {
-    const runtime = createRuntime(input)
+    const runtime = createRuntime(input, { storage: "auto" })
     const manager: Manager = createManager({
       runtime,
       registry: prepared.registry,
       canonicalise: (text, schema) => runResponseFormatter(text, schema),
       checkpoint: checkpointTranscript,
       id: randomUUID,
+      maintenance: runtime,
     })
+    // Missed deletion events are reconciled in the background. The storage
+    // maintenance records content-free issues and never rejects startup.
+    void runtime.maintenance.reconcileOrphanedStores().catch(() => undefined)
     const eligibleAgents = new Set<string>()
     const owners = new Map<string, Owner>()
     const recovery = new Map<string, Promise<void>>()
@@ -409,6 +374,87 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
         throw new Error("Automatic debate is permission-denied or unavailable to this visible main agent")
       }
       checkRuntimeDenials(await runtime.assertOwner(owner), pattern)
+    }
+
+    function storageLines(value: PlainRecord): string {
+      return Object.entries(value).map(([key, item]) => `${key}: ${typeof item === "string" ? item : JSON.stringify(item)}`).join("\n")
+    }
+
+    async function storageResponse(owner: Owner, command: StorageCommand): Promise<string> {
+      await authorizeOwner(owner)
+      // No state path, native store or private inventory is touched off Linux.
+      if (process.platform !== "linux") {
+        throw new Error("Automatic-debate storage maintenance is unsupported on this platform")
+      }
+      return manager.withMaintenance(owner, async () => {
+        switch (command.action) {
+          case "status": {
+            const status = await runtime.status(owner)
+            return `${storageLines(status as unknown as PlainRecord)}\n\nNo debate was resumed and no model work was started.`
+          }
+          case "migrate": {
+            if (command.token === undefined) {
+              const preview = await runtime.migrationPreview(owner)
+              return [
+                "Automatic-debate migration preview.",
+                `Owner session: ${preview.ownerSessionID}`,
+                `Agent: ${preview.agent}`,
+                `Native store: ${preview.source.storeID}`,
+                `Source revision: ${preview.source.revision}`,
+                `Source head: ${preview.source.head}`,
+                `Source digest: ${preview.source.digest}`,
+                `Lifecycle: ${preview.lifecycle.map((entry) => `${entry.discussionID}=${entry.status}`).join(", ") || "none"}`,
+                "Intended: private revision 1 with a prepared migration boundary.",
+                `Token: ${preview.token}`,
+                `Run: /${AUTOMATIC_DEBATE_COMMAND} ${preview.command}`,
+                "",
+                "No files or state were changed. No debate was resumed and no model work was started.",
+              ].join("\n")
+            }
+            if (command.confirmation !== "writer-handover-confirmed") {
+              throw new Error("Migration execution requires the explicit writer-handover confirmation")
+            }
+            const result = await runtime.migrate(owner, command.token)
+            return [
+              "Automatic-debate migration committed.",
+              `Native store: ${result.source.storeID} revision ${result.source.revision}`,
+              `Private revision: ${result.privateRevision}`,
+              `Private digest: ${result.privateDigest}`,
+              `Run: /${AUTOMATIC_DEBATE_COMMAND} storage delete-source`,
+              "",
+              "No debate was resumed and no model work was started.",
+            ].join("\n")
+          }
+          case "delete-source": {
+            if (command.storeID === undefined && command.token === undefined) {
+              const preview = await runtime.sourceDeletionPreview(owner)
+              return [
+                "Automatic-debate source deletion preview.",
+                `Native store: ${preview.source.storeID}`,
+                `Source revision: ${preview.source.revision}`,
+                `Source head: ${preview.source.head}`,
+                `Source digest: ${preview.source.digest}`,
+                `Private revision: ${preview.private.revision}`,
+                `Private digest: ${preview.private.digest}`,
+                `Token: ${preview.token}`,
+                `Run: /${AUTOMATIC_DEBATE_COMMAND} ${preview.command}`,
+                "",
+                "No files or state were changed. No debate was resumed and no model work was started.",
+              ].join("\n")
+            }
+            if (command.storeID === undefined || command.token === undefined) {
+              throw new Error("Source deletion requires both the exact native store ID and token")
+            }
+            await runtime.deleteSource(owner, command.storeID, command.token)
+            return [
+              "Automatic-debate source deleted and migration retired.",
+              `Native store: ${command.storeID}`,
+              "",
+              "No debate was resumed and no model work was started.",
+            ].join("\n")
+          }
+        }
+      })
     }
 
     async function activateOwner(owner: Owner, pattern?: string): Promise<void> {
@@ -505,7 +551,7 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
               if (args.discussion_id !== undefined) {
                 const discussion = discussions[0]
                 if (!discussion) throw new Error(`Unknown discussion: ${args.discussion_id}`)
-                return toolResult({ action: args.action, discussion: discussionSummary(discussion) })
+                return toolResult({ action: args.action, discussion: discussionAudit(discussion) })
               }
               return toolResult({ action: args.action, discussions: discussions.map(discussionSummary) })
             }
@@ -554,6 +600,11 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
         try {
           const parsed = parseControl(command.arguments)
           const owner = await ownerFromCommand(command.sessionID)
+          if (parsed.action === "storage") {
+            const result = await storageResponse(owner, parsed.command)
+            replaceParts(output, `${result}\n\nDo not start a debate just to answer this command.`)
+            return
+          }
           await activateOwner(owner)
           const result = await manager.control(owner, parsed)
           replaceParts(output, `${result}\n\nDo not start a debate just to answer this command.`)
@@ -565,7 +616,39 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
         if (event.type === "session.idle") await manager.onIdle(event.properties.sessionID)
         else if (event.type === "session.status" && event.properties.status.type === "busy") {
           await manager.onBusy(event.properties.sessionID)
-        } else if (event.type === "session.deleted") await manager.onDeleted(event.properties.info.id)
+        } else if (event.type === "session.deleted") {
+          const sessionID = event.properties.info.id
+          // Refuse new checkpoint writes before draining or inspecting the store.
+          runtime.noteOwnerDeleted(sessionID)
+          const owner = owners.get(sessionID)
+          try {
+            if (owner) {
+              // A loaded owner's in-flight lifecycle settles before the writer
+              // maintenance hold. A child event has no matching owner store.
+              let contained = true
+              try { await manager.onDeleted(sessionID) } catch { contained = false }
+              if (!contained) {
+                runtime.noteOwnerDeletionRetained(sessionID)
+              } else {
+                try {
+                  await manager.withMaintenance(owner, () =>
+                    runtime.maintenance.reconcileDeletedOwner(sessionID))
+                } catch {
+                  // Containment/write uncertainty retains the store and records a
+                  // content-free issue rather than claiming deletion succeeded.
+                  runtime.noteOwnerDeletionRetained(sessionID)
+                }
+              }
+            } else {
+              try { await runtime.maintenance.reconcileDeletedOwner(sessionID) } catch { /* Retained. */ }
+            }
+          } finally {
+            if (owner) {
+              owners.delete(sessionID)
+              recovery.delete(sessionID)
+            }
+          }
+        }
       },
       "experimental.chat.system.transform": async ({ sessionID }, output) => {
         if (!sessionID) return

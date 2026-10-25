@@ -13,8 +13,31 @@ export const DEFAULT_AUTO_DEBATE_CONFIG: AutoDebateConfig = Object.freeze({
   persistTranscripts: true,
 })
 
+export type StorageCommand =
+  | { action: "status" }
+  | { action: "migrate"; token?: string; confirmation?: "writer-handover-confirmed" }
+  | { action: "delete-source"; storeID?: string; token?: string }
+
 export type Control = { action: "on" | "off" | "status" | "reset" }
   | { action: "stop"; target: string }
+  | { action: "storage"; command: StorageCommand }
+
+const TOKEN = /^[a-f0-9]{64}$/u
+
+function storageControl(args: readonly string[]): StorageCommand {
+  if (args.length === 2 && args[1] === "status") return { action: "status" }
+  if (args.length === 2 && args[1] === "migrate") return { action: "migrate" }
+  if (args.length === 4 && args[1] === "migrate" && TOKEN.test(args[2])
+    && args[3] === "--writer-handover-confirmed") {
+    return { action: "migrate", token: args[2], confirmation: "writer-handover-confirmed" }
+  }
+  if (args.length === 2 && args[1] === "delete-source") return { action: "delete-source" }
+  if (args.length === 4 && args[1] === "delete-source" && args[2] !== "all"
+    && TOKEN.test(args[3])) {
+    return { action: "delete-source", storeID: args[2], token: args[3] }
+  }
+  throw new Error("Invalid automatic debate storage command")
+}
 
 export type StopInput = {
   cycle: number
@@ -36,6 +59,7 @@ export function shouldEndCycle(input: StopInput): boolean {
 export function parseControl(text: string): Control {
   const args = text.trim().split(/\s+/u).filter(Boolean)
   const verb = args[0]
+  if (verb === "storage") return { action: "storage", command: storageControl(args) }
   if (args.length === 1 && (verb === "on" || verb === "off" || verb === "status" || verb === "reset")) {
     return { action: verb }
   }
@@ -132,6 +156,8 @@ export function applyControl(state: ConversationState, control: Control): Conver
     }
     case "status":
       return state
+    case "storage":
+      throw new Error("Storage maintenance is not a conversation control")
     case "stop": {
       const index = state.discussions.findIndex((discussion) => discussion.id === control.target)
       if (index < 0) throw new Error(`Unknown discussion: ${control.target}`)

@@ -11,6 +11,7 @@ import {
   type Control,
 } from "./state.ts"
 import { buildParticipantPrompt } from "./prompts.ts"
+import { isCompactionEligible, MaintenanceFailure, type CompactionMaintenance } from "./storage.ts"
 import type {
   AutoDebateConfig,
   Brief,
@@ -34,6 +35,7 @@ export type ManagerOptions = {
   canonicalise: (text: string, schema: DebateResponseSchema) => string
   checkpoint: (discussion: Discussion) => Promise<void | TranscriptCheckpointResult>
   id: () => string
+  maintenance?: CompactionMaintenance
 }
 
 export interface Manager {
@@ -47,6 +49,9 @@ export interface Manager {
   onBusy(sessionID: string): Promise<void>
   onDeleted(sessionID: string): Promise<void>
   recover(owner: Owner): Promise<void>
+  /** Mark maintenance ownership synchronously, block all new owner operations,
+   * wait for prior owner lifecycle/idle work, then hold ownerWrites for the callback. */
+  withMaintenance<T>(owner: Owner, operation: () => Promise<T>): Promise<T>
   dispose(): Promise<void>
 }
 
@@ -162,6 +167,10 @@ export function createManager(options: ManagerOptions): Manager {
   const idleWork = new Map<string, Promise<void>>()
   const idleAgain = new Set<string>()
   const lifecycleOperations = new Set<Promise<void>>()
+  const ownerLifecycle = new Map<string, Set<Promise<void>>>()
+  const maintenanceHolds = new Set<string>()
+  const deferredDeliveries = new Set<string>()
+  const maintenanceTasks = new Map<string, Promise<void>>()
   let disposed = false
   let disposeTask: Promise<void> | undefined
 
@@ -182,18 +191,142 @@ export function createManager(options: ManagerOptions): Manager {
     if (disposed) throw new Error("Automatic-debate manager is disposed")
   }
 
-  function withLifecycle<T>(operation: () => Promise<T>): Promise<T> {
-    assertNotDisposed()
+  function assertNoMaintenance(sessionID: string): void {
+    if (maintenanceHolds.has(sessionID)) {
+      throw new Error("Automatic-debate maintenance is in progress for this owner")
+    }
+  }
+
+  function maintenanceUnavailable(reason: string): Error {
+    const error = new Error(`Automatic-debate maintenance is unavailable: ${reason}`)
+    error.name = "AutomaticDebateMaintenanceUnavailable"
+    return error
+  }
+
+  function withLifecycle<T>(sessionID: string | undefined, operation: () => Promise<T>): Promise<T> {
+    if (disposed) return Promise.reject(new Error("Automatic-debate manager is disposed"))
+    if (sessionID !== undefined && maintenanceHolds.has(sessionID)) {
+      return Promise.reject(new Error("Automatic-debate maintenance is in progress for this owner"))
+    }
     let release!: () => void
     const settled = new Promise<void>((resolve) => { release = resolve })
     lifecycleOperations.add(settled)
+    const ownerTasks = sessionID === undefined
+      ? undefined : (ownerLifecycle.get(sessionID) ?? (() => {
+        const tasks = new Set<Promise<void>>()
+        ownerLifecycle.set(sessionID, tasks)
+        return tasks
+      })())
+    ownerTasks?.add(settled)
     return (async () => {
       try { return await operation() }
       finally {
+        if (ownerTasks) {
+          ownerTasks.delete(settled)
+          if (ownerTasks.size === 0 && ownerLifecycle.get(sessionID!) === ownerTasks) ownerLifecycle.delete(sessionID!)
+        }
         lifecycleOperations.delete(settled)
         release()
       }
     })()
+  }
+
+  function activeCycleFor(sessionID: string): boolean {
+    for (const key of activeCycles.keys()) {
+      if ((JSON.parse(key) as [string, string])[0] === sessionID) return true
+    }
+    return false
+  }
+
+  async function withMaintenanceInternal<T>(owner: Owner, operation: () => Promise<T>): Promise<T> {
+    assertNotDisposed()
+    const sessionID = owner.sessionID
+    const existing = entries.get(sessionID)
+    if (existing && !own(existing.owner, owner)) {
+      throw new Error("Automatic-debate owner context does not match the loaded conversation")
+    }
+    if (maintenanceHolds.has(sessionID)) {
+      throw maintenanceUnavailable("maintenance is already in progress for this owner")
+    }
+    maintenanceHolds.add(sessionID) // Synchronous hold before the first await.
+    try {
+      // Lifecycle work may itself wait on ownerWrites; drain it before taking that lock.
+      while (true) {
+        const tasks = ownerLifecycle.get(sessionID)
+        if (!tasks || tasks.size === 0) break
+        await Promise.allSettled([...tasks])
+      }
+      // A background cycle also writes through ownerWrites; let it settle without
+      // waiting while holding that lock.
+      while (true) {
+        const cycles: Promise<void>[] = []
+        for (const [key, task] of activeCycles) {
+          if ((JSON.parse(key) as [string, string])[0] === sessionID) cycles.push(task)
+        }
+        if (cycles.length === 0) break
+        await Promise.allSettled(cycles)
+      }
+      while (true) {
+        const work = idleWork.get(sessionID)
+        if (!work) break
+        await Promise.allSettled([work])
+      }
+
+      return await lock(ownerWrites, sessionID, async () => {
+        assertNotDisposed()
+        if ((ownerLifecycle.get(sessionID)?.size ?? 0) > 0) {
+          throw maintenanceUnavailable("owner lifecycle work is still active")
+        }
+        if (idleWork.has(sessionID)) throw maintenanceUnavailable("idle work is still active")
+        if (activeCycleFor(sessionID)) throw maintenanceUnavailable("an automatic-debate cycle is still active")
+        const entry = entries.get(sessionID)
+        // Deletion cleanup enters maintenance after containment has tombstoned the
+        // owner. Other maintenance callers still see the deleted entry through
+        // their own owner operations, which reject it.
+        if (entry?.writeFailure) {
+          throw new Error(`Automatic-debate checkpoint is unconfirmed: ${entry.writeFailure}`)
+        }
+        return await operation()
+      })
+    } finally {
+      maintenanceHolds.delete(sessionID)
+      if (deferredDeliveries.delete(sessionID)) {
+        const entry = entries.get(sessionID)
+        if (entry && !entry.deleted && !disposed) void scheduleDelivery(entry).catch(() => undefined)
+      }
+    }
+  }
+
+  function scheduleMaintenance(owner: Owner): void {
+    if (disposed || !options.maintenance) return
+    const sessionID = owner.sessionID
+    const entry = entries.get(sessionID)
+    if (!entry || entry.deleted) return
+    const previous = maintenanceTasks.get(sessionID) ?? Promise.resolve()
+    const task = previous.then(async () => {
+      if (disposed) return
+      const current = entries.get(sessionID)
+      if (!current || current.deleted) return
+      const maintenance = options.maintenance
+      if (!maintenance) return
+      try {
+        await withMaintenanceInternal(owner, () => maintenance.compactIfEligible(owner, isCompactionEligible))
+      } catch (error) {
+        if (error instanceof Error && error.name === "AutomaticDebateMaintenanceUnavailable") return
+        // Only a failure after publication or cleanup began can leave the store
+        // outcome uncertain. Read-only/preflight failures remain local to
+        // maintenance; storage integrity failures still fail closed at the store.
+        if (!(error instanceof MaintenanceFailure) || error.stage !== "publication") return
+        const target = entries.get(sessionID)
+        if (target && !target.deleted) {
+          target.writeFailure = target.writeFailure ?? message(error)
+        }
+      }
+    })
+    maintenanceTasks.set(sessionID, task)
+    void task.finally(() => {
+      if (maintenanceTasks.get(sessionID) === task) maintenanceTasks.delete(sessionID)
+    }).catch(() => undefined)
   }
 
   async function entryFor(owner: Owner): Promise<Entry> {
@@ -637,6 +770,10 @@ export function createManager(options: ManagerOptions): Manager {
   }
 
   function scheduleDelivery(entry: Entry): Promise<void> {
+    if (maintenanceHolds.has(entry.owner.sessionID)) {
+      deferredDeliveries.add(entry.owner.sessionID)
+      return Promise.resolve()
+    }
     if (!entry.state || entry.deleted || entry.writeFailure || disposed) return Promise.resolve()
     const sessionID = entry.owner.sessionID
     const existing = idleWork.get(sessionID)
@@ -683,21 +820,23 @@ export function createManager(options: ManagerOptions): Manager {
     }
   }
 
-  async function cancelEntry(entry: Entry, id: string, reason: "explicit-stop" | "obsolete", save: boolean): Promise<void> {
+  async function cancelEntry(entry: Entry, id: string, reason: "explicit-stop" | "obsolete", save: boolean): Promise<boolean> {
     const discussion = findDiscussion(entry, id)
-    if (["cancelled", "resolved", "interrupted"].includes(discussion.status)) return
-    await lock(discussionWrites, discussionKey(entry.owner, id), async () => {
+    if (["cancelled", "resolved", "interrupted"].includes(discussion.status)) return false
+    return lock(discussionWrites, discussionKey(entry.owner, id), async () => {
       const next = fenceCancellation(entry, id, reason)
-      if (!next) return
+      if (!next) return false
       await persistCancellations(entry, [id], save)
       const current = findDiscussion(entry, id)
       await abortRecorded(entry, current, [...current.cancellation!.pendingSessionIDs], save)
+      return true
     })
   }
 
-  async function cancelBatch(entry: Entry, ids: readonly string[], reason: "explicit-stop" | "obsolete"): Promise<void> {
+  async function cancelBatch(entry: Entry, ids: readonly string[], reason: "explicit-stop" | "obsolete"): Promise<boolean> {
     for (const id of ids) findDiscussion(entry, id) // Validate the entire owner-scoped selection first.
     const fenced = ids.filter((id) => fenceCancellation(entry, id, reason) !== undefined)
+    if (fenced.length === 0) return false
     // No await (including persistence/locks/cessation) until every selected
     // generation has stopped accepting turns and scheduling new rounds.
     await persistCancellations(entry, fenced, true)
@@ -705,6 +844,7 @@ export function createManager(options: ManagerOptions): Manager {
       const current = findDiscussion(entry, id)
       await abortRecorded(entry, current, [...current.cancellation!.pendingSessionIDs], true)
     })
+    return true
   }
 
   async function status(owner: Owner, id?: string): Promise<readonly Discussion[]> {
@@ -750,8 +890,9 @@ export function createManager(options: ManagerOptions): Manager {
   }
 
   return {
-    start: (owner, brief) => withLifecycle(async () => {
+    start: (owner, brief) => withLifecycle(owner.sessionID, async () => {
       const entry = await entryFor(owner)
+      assertNoMaintenance(owner.sessionID)
       assertNotDisposed()
       const config = configSnapshot()
       const panel = panelSnapshot()
@@ -772,8 +913,10 @@ export function createManager(options: ManagerOptions): Manager {
       const state = entry.state ?? emptyState()
       startDiscussion(state, config, discussion) // Check admission before any native policy lookup.
       const restrictions = await runtime.restrictions(owner)
+      assertNoMaintenance(owner.sessionID)
       assertNotDisposed()
       await lock(ownerAdmissions, owner.sessionID, async () => {
+        assertNoMaintenance(owner.sessionID)
         assertNotDisposed()
         entry.state = startDiscussion(entry.state ?? emptyState(), config, discussion)
         await persist(entry, discussion)
@@ -781,12 +924,14 @@ export function createManager(options: ManagerOptions): Manager {
 
       const failures: { participant: string; message: string }[] = []
       for (const participant of panel) {
+        assertNoMaintenance(owner.sessionID)
         assertNotDisposed()
         const beforeCreate = findDiscussion(entry, discussion.id)
         if (beforeCreate.status !== "running" || entry.deleted) break
         let member: PanelMember
         try { member = await runtime.createParticipant(owner, participant, restrictions) }
         catch (error) {
+          assertNoMaintenance(owner.sessionID)
           const current = findDiscussion(entry, discussion.id)
           if (current.status === "running" && !entry.deleted) failures.push({ participant: participant.agent, message: message(error) })
           continue
@@ -795,7 +940,10 @@ export function createManager(options: ManagerOptions): Manager {
         await lock(discussionWrites, discussionKey(owner, discussion.id), async () => {
           const current = findDiscussion(entry, discussion.id)
           current.panel.push(structuredClone(member))
-          if (current.status !== "running" || entry.deleted) {
+          // A participant creation that was already in flight must be recorded
+          // before a maintenance hold can reject the start. The hold also stops
+          // any further participant creation or prompt dispatch.
+          if (current.status !== "running" || entry.deleted || maintenanceHolds.has(owner.sessionID)) {
             current.cancellation ??= { pendingSessionIDs: [], errors: [] }
             if (!current.cancellation.pendingSessionIDs.includes(member.sessionID)) {
               current.cancellation.pendingSessionIDs.push(member.sessionID)
@@ -814,19 +962,29 @@ export function createManager(options: ManagerOptions): Manager {
             await abortRecorded(entry, current, current.cancellation.pendingSessionIDs, false)
             throw error
           }
+          if (!stopAfterCreate && maintenanceHolds.has(owner.sessionID)) {
+            current.cancellation ??= { pendingSessionIDs: [], errors: [] }
+            if (!current.cancellation.pendingSessionIDs.includes(member.sessionID)) {
+              current.cancellation.pendingSessionIDs.push(member.sessionID)
+            }
+            stopAfterCreate = true
+          }
           if (stopAfterCreate) await abortRecorded(entry, current, [member.sessionID], true)
-      })
-      if (stopAfterCreate) {
-        if (entry.deleted) {
-          const deletedDiscussion = findDiscussion(entry, discussion.id)
-          await abortRecorded(entry, deletedDiscussion, [member.sessionID], false)
+        })
+        if (stopAfterCreate) {
+          if (entry.deleted) {
+            const deletedDiscussion = findDiscussion(entry, discussion.id)
+            await abortRecorded(entry, deletedDiscussion, [member.sessionID], false)
+          }
+          assertNoMaintenance(owner.sessionID)
+          assertNotDisposed()
+          return structuredClone(findDiscussion(entry, discussion.id))
         }
-        assertNotDisposed()
-        return structuredClone(findDiscussion(entry, discussion.id))
-      }
+        assertNoMaintenance(owner.sessionID)
         assertNotDisposed()
       }
 
+      assertNoMaintenance(owner.sessionID)
       assertNotDisposed()
       const afterCreate = findDiscussion(entry, discussion.id)
       if (afterCreate.status !== "running" || entry.deleted) return structuredClone(afterCreate)
@@ -856,24 +1014,33 @@ export function createManager(options: ManagerOptions): Manager {
     status,
 
     evaluate: async (owner, id, evaluation) => {
-      const entry = await entryFor(owner)
-      return lock(discussionWrites, discussionKey(owner, id), async () => {
-        const discussion = findDiscussion(entry, id)
-        // applyEvaluation enforces the awaiting-evaluation state and cycle policy.
-        const evaluated = applyEvaluation(discussion, evaluation)
-        entry.state!.discussions[entry.state!.discussions.findIndex((candidate) => candidate.id === id)] = evaluated
-        for (const item of entry.state!.outbox) {
-          if (item.discussionID === id && item.cycle === evaluation.cycle) item.state = "acknowledged"
-        }
-        deliveryWarning(evaluated, evaluation.cycle)
-        await persist(entry, evaluated)
-        return structuredClone(evaluated)
+      const evaluated = await withLifecycle(owner.sessionID, async () => {
+        const entry = await entryFor(owner)
+        assertNoMaintenance(owner.sessionID)
+        return lock(discussionWrites, discussionKey(owner, id), async () => {
+          assertNoMaintenance(owner.sessionID)
+          const discussion = findDiscussion(entry, id)
+          // applyEvaluation enforces the awaiting-evaluation state and cycle policy.
+          const next = applyEvaluation(discussion, evaluation)
+          entry.state!.discussions[entry.state!.discussions.findIndex((candidate) => candidate.id === id)] = next
+          for (const item of entry.state!.outbox) {
+            if (item.discussionID === id && item.cycle === evaluation.cycle) item.state = "acknowledged"
+          }
+          deliveryWarning(next, evaluation.cycle)
+          await persist(entry, next)
+          assertNoMaintenance(owner.sessionID)
+          return structuredClone(next)
+        })
       })
+      if (evaluated.status === "resolved") scheduleMaintenance(owner)
+      return evaluated
     },
 
-    resume: (owner, id, feedback) => withLifecycle(async () => {
+    resume: (owner, id, feedback) => withLifecycle(owner.sessionID, async () => {
+      assertNoMaintenance(owner.sessionID)
       if (typeof feedback !== "string" || feedback.trim().length === 0) throw new Error("Resume requires explicit main-agent feedback")
       const entry = await entryFor(owner)
+      assertNoMaintenance(owner.sessionID)
       assertNotDisposed()
       return lock(discussionWrites, discussionKey(owner, id), async () => {
         const current = findDiscussion(entry, id)
@@ -899,6 +1066,7 @@ export function createManager(options: ManagerOptions): Manager {
           try { statuses.push(await runtime.reconcileParticipant(owner, member)) }
           catch (error) { statuses.push({ sessionID: member.sessionID, state: "uncertain", messageIDs: [], reason: message(error) }) }
         }
+        assertNoMaintenance(owner.sessionID)
         assertNotDisposed()
         // Batch cancellation fences outside this lock. Neither failed nor successful
         // asynchronous inspections may write back over a newer terminal transition.
@@ -928,6 +1096,7 @@ export function createManager(options: ManagerOptions): Manager {
         rebased.followups = [...rebased.followups, { cycle: rebased.cycle, feedback }]
         entry.state = rebasedState
         await persist(entry, rebased)
+        assertNoMaintenance(owner.sessionID)
         assertNotDisposed()
         launchCycle(entry, id)
         return structuredClone(rebased)
@@ -935,54 +1104,69 @@ export function createManager(options: ManagerOptions): Manager {
     }),
 
     cancel: async (owner, target, reason) => {
-      const entry = await entryFor(owner)
-      if (target === "all") {
-        await cancelBatch(entry, (entry.state?.discussions ?? []).map((discussion) => discussion.id), reason)
-        return
-      }
-      findDiscussion(entry, target)
-      await cancelEntry(entry, target, reason, true)
+      const changed = await withLifecycle(owner.sessionID, async () => {
+        assertNoMaintenance(owner.sessionID)
+        const entry = await entryFor(owner)
+        assertNoMaintenance(owner.sessionID)
+        if (target === "all") {
+          return cancelBatch(entry, (entry.state?.discussions ?? []).map((discussion) => discussion.id), reason)
+        }
+        findDiscussion(entry, target)
+        return cancelEntry(entry, target, reason, true)
+      })
+      if (changed) scheduleMaintenance(owner)
     },
 
     control: async (owner, command) => {
-      const entry = await entryFor(owner)
-      if (command.action === "status") {
-        const discussions = entry.state?.discussions ?? []
-        const enabled = (entry.state?.override ?? options.registry.autoDebate?.enabled ?? DEFAULT_AUTO_DEBATE_CONFIG.enabled)
-        const heading = `Automatic debate is ${enabled ? "enabled" : "disabled"} for new discussions.`
-        if (discussions.length === 0) return `${heading} No saved discussions.`
-        return [heading, ...discussions.map((discussion) => statusText(entry, discussion))].join("\n")
-      }
-      if (command.action === "stop") {
-        if (command.target === "all") {
-          const ids = (entry.state?.discussions ?? []).map((discussion) => discussion.id)
-          await cancelBatch(entry, ids, "explicit-stop")
-          return ids.length === 0 ? "No saved discussions to stop."
-            : ids.map((id) => statusText(entry, findDiscussion(entry, id))).join("\n")
+      const text = await withLifecycle(owner.sessionID, async () => {
+        assertNoMaintenance(owner.sessionID)
+        const entry = await entryFor(owner)
+        assertNoMaintenance(owner.sessionID)
+        if (command.action === "status") {
+          const discussions = entry.state?.discussions ?? []
+          const enabled = (entry.state?.override ?? options.registry.autoDebate?.enabled ?? DEFAULT_AUTO_DEBATE_CONFIG.enabled)
+          const heading = `Automatic debate is ${enabled ? "enabled" : "disabled"} for new discussions.`
+          if (discussions.length === 0) return `${heading} No saved discussions.`
+          return [heading, ...discussions.map((discussion) => statusText(entry, discussion))].join("\n")
         }
-        await cancelEntry(entry, command.target, "explicit-stop", true)
-        return statusText(entry, findDiscussion(entry, command.target))
-      }
-      const state = entry.state ?? emptyState()
-      entry.state = applyControl(state, command)
-      await persist(entry)
-      return command.action === "on" ? "Automatic debate enabled for this conversation."
-        : command.action === "off" ? "Automatic debate disabled for new discussions; existing work is unchanged."
-          : "Automatic debate now follows the configured default."
+        if (command.action === "stop") {
+          if (command.target === "all") {
+            const ids = (entry.state?.discussions ?? []).map((discussion) => discussion.id)
+            await cancelBatch(entry, ids, "explicit-stop")
+            return ids.length === 0 ? "No saved discussions to stop."
+              : ids.map((id) => statusText(entry, findDiscussion(entry, id))).join("\n")
+          }
+          await cancelEntry(entry, command.target, "explicit-stop", true)
+          return statusText(entry, findDiscussion(entry, command.target))
+        }
+        const state = entry.state ?? emptyState()
+        entry.state = applyControl(state, command)
+        await persist(entry)
+        return command.action === "on" ? "Automatic debate enabled for this conversation."
+          : command.action === "off" ? "Automatic debate disabled for new discussions; existing work is unchanged."
+            : "Automatic debate now follows the configured default."
+      })
+      if (command.action === "stop") scheduleMaintenance(owner)
+      return text
     },
 
-    onIdle: async (sessionID) => {
+    onIdle: (sessionID) => withLifecycle(sessionID, async () => {
+      assertNoMaintenance(sessionID)
       await retryPendingAbort(sessionID)
+      assertNoMaintenance(sessionID)
       const entry = entries.get(sessionID)
       if (disposed || !entry?.loaded || !entry.state || entry.deleted) return
       await scheduleDelivery(entry)
-    },
+    }),
 
-    onBusy: async (sessionID) => {
+    onBusy: (sessionID) => withLifecycle(sessionID, async () => {
+      assertNoMaintenance(sessionID)
       await retryPendingAbort(sessionID)
-    },
+      assertNoMaintenance(sessionID)
+    }),
 
-    onDeleted: async (sessionID) => {
+    onDeleted: (sessionID) => withLifecycle(sessionID, async () => {
+      assertNoMaintenance(sessionID)
       const entry = entries.get(sessionID)
       if (!entry || entry.deleted) return
       entry.deleted = true
@@ -990,93 +1174,112 @@ export function createManager(options: ManagerOptions): Manager {
         if (["cancelled", "interrupted"].includes(discussion.status)) {
           if (discussion.cancellation?.pendingSessionIDs.length) {
             await abortRecorded(entry, discussion, discussion.cancellation.pendingSessionIDs, false)
+            assertNoMaintenance(sessionID)
           }
           continue
         }
         if (discussion.status === "resolved") continue
         await cancelEntry(entry, discussion.id, "explicit-stop", false)
+        assertNoMaintenance(sessionID)
+      }
+    }),
+
+    recover: async (owner) => {
+      await withLifecycle(owner.sessionID, async () => {
+        assertNoMaintenance(owner.sessionID)
+        const entry = await entryFor(owner)
+        assertNoMaintenance(owner.sessionID)
+        if (!entry.state) return
+        let changed = false
+        const recoveryChanges = new Set<string>()
+        const abortAfterRecovery = new Map<string, { discussion: Discussion; sessionIDs: string[] }>()
+        let observations: readonly DeliveryReconciliation[] = []
+        try { observations = await runtime.reconcileDeliveries(owner) }
+        catch (error) {
+          for (const item of entry.state.outbox.filter((candidate) => candidate.state === "pending")) {
+            const discussion = entry.state.discussions.find((candidate) => candidate.id === item.discussionID)
+            if (discussion) deliveryWarning(discussion, item.cycle, `Delivery lookup unavailable: ${message(error)}`)
+          }
+          changed = true
+        }
+        assertNoMaintenance(owner.sessionID)
+        for (const observation of observations) {
+          const before = JSON.stringify(entry.state)
+          await applyDeliveryObservation(entry, observation)
+          assertNoMaintenance(owner.sessionID)
+          changed ||= before !== JSON.stringify(entry.state)
+        }
+        for (const discussion of [...entry.state.discussions]) {
+          if (!["running", "paused", "cancelled"].includes(discussion.status)) continue
+          const reconciled: ParticipantReconciliation[] = []
+          for (const member of discussion.panel) {
+            try { reconciled.push(await runtime.reconcileParticipant(owner, member)) }
+            catch (error) { reconciled.push({ sessionID: member.sessionID, state: "uncertain", messageIDs: [], reason: message(error) }) }
+          }
+          assertNoMaintenance(owner.sessionID)
+          if (discussion.status === "running") {
+            const uncertain = reconciled.filter((item) => item.state === "uncertain" || item.state === "fenced" && item.cessation === "unconfirmed")
+            discussion.status = "interrupted"
+            discussion.generation++
+            discussion.cancellation = {
+              pendingSessionIDs: uncertain.map((item) => item.sessionID),
+              errors: uncertain.map((item) => `${item.sessionID}: ${item.state === "uncertain" ? item.reason : "cessation unconfirmed"}`),
+            }
+            if (!discussion.results.some((result) => result.cycle === discussion.cycle)) {
+              const turns = resultTurns(discussion)
+              discussion.results.push({ cycle: discussion.cycle, rounds: Math.max(0, ...turns.map((turn) => turn.round)),
+                status: "interrupted", reason: "shutdown", turns, failures: [{ participant: "manager", message: "Recovered an in-flight cycle; execution was not replayed." }], consensus: false })
+            }
+            discussion.pendingTurns = []
+            changed = true
+            recoveryChanges.add(discussion.id)
+            if (uncertain.length > 0) abortAfterRecovery.set(discussion.id, { discussion, sessionIDs: uncertain.map((item) => item.sessionID) })
+          } else if (discussion.status === "paused" && reconciled.some((item) => item.state !== "exhausted" || !item.canContinue)) {
+            const unsafe = reconciled.filter((item) => item.state !== "exhausted" || !item.canContinue)
+            const unconfirmed = unsafe.filter((item) => item.state === "uncertain"
+              || item.state === "fenced" && item.cessation === "unconfirmed")
+            discussion.status = "interrupted"
+            discussion.generation++
+            discussion.cancellation = {
+              pendingSessionIDs: unconfirmed.map((item) => item.sessionID),
+              errors: unsafe.map((item) => `${item.sessionID}: ${item.state === "uncertain" ? item.reason : item.state === "fenced" ? `cessation ${item.cessation}` : "no continuation proof"}`),
+            }
+            changed = true
+            recoveryChanges.add(discussion.id)
+            abortAfterRecovery.set(discussion.id, { discussion, sessionIDs: unsafe.map((item) => item.sessionID) })
+          } else if (discussion.status === "cancelled" && discussion.cancellation) {
+            const pending = new Set(discussion.cancellation.pendingSessionIDs)
+            for (const result of reconciled) {
+              if (result.state === "fenced" && result.cessation === "confirmed") pending.delete(result.sessionID)
+              else if (result.state === "uncertain" || result.state === "fenced") pending.add(result.sessionID)
+            }
+            const next = [...pending]
+            if (JSON.stringify(next) !== JSON.stringify(discussion.cancellation.pendingSessionIDs)) {
+              discussion.cancellation.pendingSessionIDs = next
+              changed = true
+              recoveryChanges.add(discussion.id)
+            }
+            if (next.length > 0) abortAfterRecovery.set(discussion.id, { discussion, sessionIDs: next })
+          }
+        }
+        if (changed) {
+          await persistMany(entry, [...recoveryChanges])
+        }
+        assertNoMaintenance(owner.sessionID)
+        for (const { discussion, sessionIDs } of abortAfterRecovery.values()) {
+          await abortRecorded(entry, discussion, sessionIDs, true)
+          assertNoMaintenance(owner.sessionID)
+        }
+      })
+      const entry = entries.get(owner.sessionID)
+      if (entry?.state && entry.state.discussions.length > 0
+        && entry.state.discussions.every((discussion) =>
+          discussion.status === "resolved" || discussion.status === "cancelled")) {
+        scheduleMaintenance(owner)
       }
     },
 
-    recover: async (owner) => {
-      const entry = await entryFor(owner)
-      if (!entry.state) return
-      let changed = false
-      const recoveryChanges = new Set<string>()
-      const abortAfterRecovery = new Map<string, { discussion: Discussion; sessionIDs: string[] }>()
-      let observations: readonly DeliveryReconciliation[] = []
-      try { observations = await runtime.reconcileDeliveries(owner) }
-      catch (error) {
-        for (const item of entry.state.outbox.filter((candidate) => candidate.state === "pending")) {
-          const discussion = entry.state.discussions.find((candidate) => candidate.id === item.discussionID)
-          if (discussion) deliveryWarning(discussion, item.cycle, `Delivery lookup unavailable: ${message(error)}`)
-        }
-        changed = true
-      }
-      for (const observation of observations) {
-        const before = JSON.stringify(entry.state)
-        await applyDeliveryObservation(entry, observation)
-        changed ||= before !== JSON.stringify(entry.state)
-      }
-      for (const discussion of [...entry.state.discussions]) {
-        if (!["running", "paused", "cancelled"].includes(discussion.status)) continue
-        const reconciled: ParticipantReconciliation[] = []
-        for (const member of discussion.panel) {
-          try { reconciled.push(await runtime.reconcileParticipant(owner, member)) }
-          catch (error) { reconciled.push({ sessionID: member.sessionID, state: "uncertain", messageIDs: [], reason: message(error) }) }
-        }
-        if (discussion.status === "running") {
-          const uncertain = reconciled.filter((item) => item.state === "uncertain" || item.state === "fenced" && item.cessation === "unconfirmed")
-          discussion.status = "interrupted"
-          discussion.generation++
-          discussion.cancellation = {
-            pendingSessionIDs: uncertain.map((item) => item.sessionID),
-            errors: uncertain.map((item) => `${item.sessionID}: ${item.state === "uncertain" ? item.reason : "cessation unconfirmed"}`),
-          }
-          if (!discussion.results.some((result) => result.cycle === discussion.cycle)) {
-            const turns = resultTurns(discussion)
-            discussion.results.push({ cycle: discussion.cycle, rounds: Math.max(0, ...turns.map((turn) => turn.round)),
-              status: "interrupted", reason: "shutdown", turns, failures: [{ participant: "manager", message: "Recovered an in-flight cycle; execution was not replayed." }], consensus: false })
-          }
-          discussion.pendingTurns = []
-          changed = true
-          recoveryChanges.add(discussion.id)
-          if (uncertain.length > 0) abortAfterRecovery.set(discussion.id, { discussion, sessionIDs: uncertain.map((item) => item.sessionID) })
-        } else if (discussion.status === "paused" && reconciled.some((item) => item.state !== "exhausted" || !item.canContinue)) {
-          const unsafe = reconciled.filter((item) => item.state !== "exhausted" || !item.canContinue)
-          const unconfirmed = unsafe.filter((item) => item.state === "uncertain"
-            || item.state === "fenced" && item.cessation === "unconfirmed")
-          discussion.status = "interrupted"
-          discussion.generation++
-          discussion.cancellation = {
-            pendingSessionIDs: unconfirmed.map((item) => item.sessionID),
-            errors: unsafe.map((item) => `${item.sessionID}: ${item.state === "uncertain" ? item.reason : item.state === "fenced" ? `cessation ${item.cessation}` : "no continuation proof"}`),
-          }
-          changed = true
-          recoveryChanges.add(discussion.id)
-          abortAfterRecovery.set(discussion.id, { discussion, sessionIDs: unsafe.map((item) => item.sessionID) })
-        } else if (discussion.status === "cancelled" && discussion.cancellation) {
-          const pending = new Set(discussion.cancellation.pendingSessionIDs)
-          for (const result of reconciled) {
-            if (result.state === "fenced" && result.cessation === "confirmed") pending.delete(result.sessionID)
-            else if (result.state === "uncertain" || result.state === "fenced") pending.add(result.sessionID)
-          }
-          const next = [...pending]
-          if (JSON.stringify(next) !== JSON.stringify(discussion.cancellation.pendingSessionIDs)) {
-            discussion.cancellation.pendingSessionIDs = next
-            changed = true
-            recoveryChanges.add(discussion.id)
-          }
-          if (next.length > 0) abortAfterRecovery.set(discussion.id, { discussion, sessionIDs: next })
-        }
-      }
-      if (changed) {
-        await persistMany(entry, [...recoveryChanges])
-      }
-      for (const { discussion, sessionIDs } of abortAfterRecovery.values()) {
-        await abortRecorded(entry, discussion, sessionIDs, true)
-      }
-    },
+    withMaintenance: (owner, operation) => withMaintenanceInternal(owner, operation),
 
     dispose: () => {
       if (disposeTask) return disposeTask
