@@ -69,6 +69,85 @@ async function seedPrivate(f: Fixture, snapshot: CheckpointSnapshot = initialSna
   await store.close()
 }
 
+async function seedBoundary(f: Fixture, owner: Owner): Promise<void> {
+  await writeMigrationBoundary(f.stateRoot, {
+    kind: "opencode-debate-migration-boundary",
+    version: 1,
+    state: "committed",
+    project: f.projectID,
+    directory: owner.directory,
+    owner: owner.sessionID,
+    agent: owner.agent,
+    source: { storeID: "native-source", revision: 1, head: "head", digest: "a".repeat(64) },
+    private: { revision: 1, digest: "b".repeat(64) },
+    token: "c".repeat(64),
+  })
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
+function holdFirstPathLookup(f: Fixture): {
+  entered: Promise<void>
+  release: () => void
+  lookups: () => number
+} {
+  const originalGet = f.input.client.path.get
+  const entered = deferred<void>()
+  const release = deferred<void>()
+  let lookups = 0
+  const path = {
+    get: async (...args: Parameters<typeof originalGet>) => {
+      lookups += 1
+      if (lookups === 1) {
+        entered.resolve()
+        await release.promise
+      }
+      return originalGet(...args)
+    },
+  }
+  ;(f.input.client as unknown as { path: typeof path }).path = path
+  return { entered: entered.promise, release: release.resolve, lookups: () => lookups }
+}
+
+type Cleanup = "scan" | "event"
+
+function runCleanup(runtime: ReturnType<typeof createRuntime>, cleanup: Cleanup, sessionID: string): Promise<void> {
+  return cleanup === "scan"
+    ? runtime.maintenance.reconcileOrphanedStores()
+    : runtime.maintenance.reconcileDeletedOwner(sessionID)
+}
+
+async function assertCleanupSerialised(first: Cleanup, second: Cleanup): Promise<void> {
+  const f = await privateStorageClient()
+  try {
+    const owner = { ...f.owner }
+    addSession(f, owner)
+    await seedPrivate(f, initialSnapshot, owner)
+    await seedBoundary(f, owner)
+    f.sessions.delete(owner.sessionID)
+    const runtime = createRuntime(f.input, { storage: "auto" })
+    const gate = holdFirstPathLookup(f)
+    const firstCleanup = runCleanup(runtime, first, owner.sessionID)
+    await gate.entered
+    const secondCleanup = runCleanup(runtime, second, owner.sessionID)
+    await Promise.resolve()
+    const lookupsWhileHeld = gate.lookups()
+    gate.release()
+    await Promise.all([firstCleanup, secondCleanup])
+    assert.equal(lookupsWhileHeld, 1, `${first} cleanup must hold ${second} cleanup before inspection`)
+    assert.equal(gate.lookups(), 1, "the queued cleanup must reuse the first resolved state root")
+    assert.equal(await ownerExists(f, owner), false)
+    await assert.rejects(stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner)), /ENOENT/)
+    assert.equal(f.modelCalls(), 0)
+  } finally {
+    await f.cleanup()
+  }
+}
+
 function discussion(owner: Owner, status: Discussion["status"], overrides: Partial<Discussion> = {}): Discussion {
   return {
     id: `discussion-${status}`,
@@ -268,6 +347,46 @@ test("startup reconciliation completes a safely interrupted boundary-only cleanu
     f.sessions.delete(owner.sessionID)
 
     await createRuntime(f.input, { storage: "auto" }).maintenance.reconcileOrphanedStores()
+    await assert.rejects(stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner)), /ENOENT/)
+    assert.equal(f.modelCalls(), 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("startup reconciliation completes before an overlapping deleted-owner cleanup inspects the store", async () => {
+  await assertCleanupSerialised("scan", "event")
+})
+
+test("deleted-owner cleanup completes before an overlapping startup reconciliation inspects the store", async () => {
+  await assertCleanupSerialised("event", "scan")
+})
+
+test("simultaneous startup and deleted-owner cleanups share one serialised queue", async () => {
+  const f = await privateStorageClient()
+  try {
+    const owner = { ...f.owner }
+    addSession(f, owner)
+    await seedPrivate(f, initialSnapshot, owner)
+    await seedBoundary(f, owner)
+    f.sessions.delete(owner.sessionID)
+    const runtime = createRuntime(f.input, { storage: "auto" })
+    const gate = holdFirstPathLookup(f)
+    const first = runtime.maintenance.reconcileOrphanedStores()
+    await gate.entered
+    const queued = [
+      runtime.maintenance.reconcileDeletedOwner(owner.sessionID),
+      runtime.maintenance.reconcileOrphanedStores(),
+      runtime.maintenance.reconcileDeletedOwner(owner.sessionID),
+      runtime.maintenance.reconcileOrphanedStores(),
+    ]
+    await Promise.resolve()
+    const lookupsWhileHeld = gate.lookups()
+    gate.release()
+    await Promise.all([first, ...queued])
+    assert.equal(lookupsWhileHeld, 1)
+    assert.equal(gate.lookups(), 1)
+    assert.equal(await ownerExists(f, owner), false)
     await assert.rejects(stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner)), /ENOENT/)
     assert.equal(f.modelCalls(), 0)
   } finally {

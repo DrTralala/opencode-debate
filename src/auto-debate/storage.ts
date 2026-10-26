@@ -434,6 +434,7 @@ export function createManagedStore(
   const ownerIssues = new Map<string, Set<string>>()
   const orphanIssues = new Set<string>()
   let stateRoot: string | undefined
+  let cleanupTail: Promise<void> = Promise.resolve()
 
   function recordOwnerIssue(sessionID: string, issue: string): void {
     const existing = ownerIssues.get(sessionID) ?? new Set<string>()
@@ -464,6 +465,16 @@ export function createManagedStore(
     }
     stateRoot = resolve(value.state)
     return stateRoot
+  }
+
+  function withCleanupQueue<T>(operation: () => Promise<T>): Promise<T> {
+    // Startup scans and deleted-owner reconciliation inspect and remove the same
+    // owner directories. They must never observe each other's unlink/rmdir
+    // boundary, so every full cleanup shares one queue. The tail always settles
+    // and later operations remain admitted after an earlier failure.
+    const result = cleanupTail.then(() => operation())
+    cleanupTail = result.then(() => undefined, () => undefined)
+    return result
   }
 
   async function privateStore(owner: Owner, root: string): Promise<PrivateStore> {
@@ -1330,26 +1341,30 @@ export function createManagedStore(
 
       reconcileDeletedOwner: async (sessionID) => {
         if (typeof sessionID !== "string" || sessionID.trim().length === 0) return
+        // The tombstone is synchronous and precedes the queue so a concurrent save
+        // cannot race ahead of the deletion decision while cleanup is waiting.
         deletedOwners.add(sessionID)
         if (process.platform !== "linux") return
-        let root: string
-        try {
-          root = await resolveStateRoot()
-        } catch {
-          recordOwnerIssue(sessionID, "storage path is unavailable")
-          return
-        }
-        // The owner key binds the current project and directory; agent is not part
-        // of its derivation, so a deleted parent can be located without activation.
-        const key = privateOwnerKey(input.project.id, {
-          sessionID,
-          agent: "",
-          directory: input.directory,
+        return withCleanupQueue(async () => {
+          let root: string
+          try {
+            root = await resolveStateRoot()
+          } catch {
+            recordOwnerIssue(sessionID, "storage path is unavailable")
+            return
+          }
+          // The owner key binds the current project and directory; agent is not part
+          // of its derivation, so a deleted parent can be located without activation.
+          const key = privateOwnerKey(input.project.id, {
+            sessionID,
+            agent: "",
+            directory: input.directory,
+          })
+          await reconcileTarget(root, sessionID, key)
         })
-        await reconcileTarget(root, sessionID, key)
       },
 
-      reconcileOrphanedStores: async () => {
+      reconcileOrphanedStores: () => withCleanupQueue(async () => {
         if (process.platform !== "linux") return
         let root: string
         try {
@@ -1440,7 +1455,7 @@ export function createManagedStore(
             recordOrphanIssue("an orphan migration boundary could not be completed safely")
           }
         }
-      },
+      }),
 
       status: async (owner) => {
         const platform = process.platform === "linux" ? "linux" as const : "other" as const
