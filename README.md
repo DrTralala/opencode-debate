@@ -3,7 +3,7 @@
 <div align="center">
 
 [![CI](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml/badge.svg)](https://github.com/DrTralala/opencode-debate/actions/workflows/verify.yml)
-[![Version: v3.3.0](https://img.shields.io/badge/version-v3.3.0-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.3.0)
+[![Version: v3.3.1](https://img.shields.io/badge/version-v3.3.1-blue.svg?style=flat-square)](https://github.com/DrTralala/opencode-debate/tree/v3.3.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![Node.js >=24.15.0](https://img.shields.io/badge/Node-%3E%3D24.15.0-339933.svg?style=flat-square)](https://nodejs.org/)
 
@@ -132,7 +132,7 @@ After restart, in-flight work is marked interrupted, not replayed. Resuming requ
 
 New automatic-debate state on Linux is stored under `<state>/opencode-debate/auto-debate/v2/`. Directories are private by `0700` and files by `0600`; there is no checkpoint child for new Linux owners. The state is host-bound.
 
-Existing native checkpoints remain until explicitly migrated. Native Windows and other platforms remain on the native backend; private storage is Linux-only in v3.3.0. If a native checkpoint child carries a Linux migration marker, non-Linux startup fails closed without needing a private path, rather than resurrecting the old native source. Restore both the native source and the matching Linux plugin state on the original host.
+Existing native checkpoints remain until explicitly migrated. Native Windows and other platforms remain on the native backend; private storage is Linux-only in v3.3.1. If a native checkpoint child carries a Linux migration marker, non-Linux startup fails closed without needing a private path, rather than resurrecting the old native source. Restore both the native source and the matching Linux plugin state on the original host.
 
 Storage commands are user-only and do not resume a debate:
 
