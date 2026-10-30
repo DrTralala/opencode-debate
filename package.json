@@ -20,7 +20,7 @@
     "multi-agent"
   ],
   "files": [
-    "config.yaml",
+    "config.example.yaml",
     "index.ts",
     "src/",
     "src/transcript-persistence.ts",

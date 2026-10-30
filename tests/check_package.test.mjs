@@ -25,7 +25,8 @@ test("package metadata ships runtime data files and declares the YAML runtime de
   const packagePath = fileURLToPath(new URL("../package.json", import.meta.url))
   const packageJson = JSON.parse(readFileSync(packagePath, "utf8"))
 
-  assert.equal(packageJson.files.includes("config.yaml"), true)
+  assert.equal(packageJson.files.includes("config.example.yaml"), true)
+  assert.equal(packageJson.files.includes("config.yaml"), false)
   assert.equal(packageJson.files.includes("scripts/format_response.py"), true)
   assert.equal(packageJson.dependencies.yaml, "2.9.0")
 })

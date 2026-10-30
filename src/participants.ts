@@ -97,7 +97,7 @@ const MINI_DEBATE_FIELDS = new Set(["participant", "max_rounds"])
 const MINI_DEBATE_MIN_ROUNDS = 1
 const MINI_DEBATE_MAX_ROUNDS = 10
 const DEFAULT_MINI_DEBATE_CONFIG: MiniDebateConfig = Object.freeze({ maxRounds: 3 })
-const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.yaml", import.meta.url))
+const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.example.yaml", import.meta.url))
 
 function isMapping(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false

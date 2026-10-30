@@ -199,7 +199,7 @@ Edit the user configuration at:
 ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml
 ```
 
-If missing, the plugin atomically creates it as an exact copy of the packaged [`config.yaml`](config.yaml). Existing files are never merged or rewritten, including on upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
+If missing, the plugin atomically creates it as an exact copy of the packaged [`config.example.yaml`](config.example.yaml). Existing files are never merged or rewritten, including on upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
 
 Minimal example:
 
@@ -255,7 +255,7 @@ This runs repository contract checks, generated-agent and prompt drift detection
 
 | Path | Purpose |
 |---|---|
-| `config.yaml` | Packaged participant and set definitions |
+| `config.example.yaml` | Packaged template for the user's `config.yaml` |
 | `index.ts` | Plugin entry point and agent registration |
 | `src/` | Configuration, manual debate, dispatch guards, and persistence |
 | `src/auto-debate/` | Automatic discussion lifecycle and native-session integration |

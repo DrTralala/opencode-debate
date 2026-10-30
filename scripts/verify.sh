@@ -50,7 +50,7 @@ assert_tracked ".opencode/commands/debate.md"
 assert_tracked ".opencode/commands/mini-debate.md"
 assert_tracked ".opencode/plugin/debate.ts"
 assert_tracked "index.ts"
-assert_present "config.yaml"
+assert_present "config.example.yaml"
 assert_tracked "LICENSE"
 assert_tracked "tests/debate.test.ts"
 assert_present "tests/participants.test.ts"
@@ -97,7 +97,7 @@ assert_tracked "tests/publish_workflow.test.mjs"
 assert_not_contains "package.json" '"private"'
 assert_contains "package.json" '"author": "DrTralala <drtralala@outlook.com>"'
 assert_contains "package.json" '"files": ['
-assert_contains "package.json" '"config.yaml"'
+assert_contains "package.json" '"config.example.yaml"'
 assert_contains "package.json" '"yaml": "2.9.0"'
 assert_contains "package.json" '"scripts/generate_html.py"'
 assert_contains "package.json" '"scripts/publish_transcript.py"'
@@ -132,8 +132,8 @@ assert_not_contains "README.md" 'GPT-5.6 Sol Pro'
 assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
 
 # Packaged defaults expose the mini-debate participant and round budget.
-assert_contains "config.yaml" "mini_debate:"
-assert_contains "config.yaml" "  participant: debate-glm"
+assert_contains "config.example.yaml" "mini_debate:"
+assert_contains "config.example.yaml" "  participant: debate-glm"
 assert_contains "README.md" '/mini-debate <topic>'
 assert_contains "README.md" "mini_debate:"
 assert_contains "README.md" "mirrored to its mini alias"
@@ -290,8 +290,8 @@ assert_contains "src/debate.ts" "setUsage"
 assert_contains "src/debate.ts" "Participant set"
 assert_contains "src/debate.ts" "Resolved participants"
 assert_not_contains "src/debate.ts" "DEFAULT_SET"
-assert_line "config.yaml" "version: 2"
-assert_contains "config.yaml" "  cheap:"
+assert_line "config.example.yaml" "version: 2"
+assert_contains "config.example.yaml" "  cheap:"
 
 # Behavioural checks: Python and Node unit tests and TypeScript typechecking.
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to generate transcript HTML"

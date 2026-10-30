@@ -183,7 +183,7 @@ test("project-local plugin bridge satisfies the OpenCode v1.17.13 file-plugin lo
     mkdirSync(configDir, { recursive: true })
     writeFileSync(
       join(configDir, "config.yaml"),
-      readFileSync(new URL("../config.yaml", import.meta.url), "utf8"),
+      readFileSync(new URL("../config.example.yaml", import.meta.url), "utf8"),
     )
     const result = spawnSync(
       process.execPath,

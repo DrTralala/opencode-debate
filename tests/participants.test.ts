@@ -68,8 +68,8 @@ function assertInvalidConfig(source: string, fieldPath: string, reason: RegExp):
   )
 }
 
-test("packaged config.yaml preserves the shipped version 2 participant registry", () => {
-  const source = readFileSync(new URL("../config.yaml", import.meta.url), "utf8")
+test("packaged config.example.yaml preserves the shipped version 2 participant registry", () => {
+  const source = readFileSync(new URL("../config.example.yaml", import.meta.url), "utf8")
   const config = parse(source)
 
   assert.deepEqual(config, {
@@ -125,7 +125,7 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
   })
 })
 
-test("packaged compatibility exports are loaded from config.yaml", () => {
+test("packaged compatibility exports are loaded from config.example.yaml", () => {
   assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "cheap"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-openai"])
