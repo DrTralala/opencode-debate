@@ -133,7 +133,7 @@ assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
 
 # Packaged defaults expose the mini-debate participant and round budget.
 assert_contains "config.yaml" "mini_debate:"
-assert_contains "config.yaml" "  participant: debate-kimi"
+assert_contains "config.yaml" "  participant: debate-glm"
 assert_contains "README.md" '/mini-debate <topic>'
 assert_contains "README.md" "mini_debate:"
 assert_contains "README.md" "mirrored to its mini alias"

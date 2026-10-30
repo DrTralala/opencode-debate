@@ -1,8 +1,8 @@
 ---
-description: Neutral debate participant using GLM-5.2 from OpenCode Go (max)
+description: Neutral debate participant from Z.ai
 mode: subagent
 hidden: true
-model: opencode-go/glm-5.2
+model: commandcode/zai-org/GLM-5.3
 variant: max
 permission:
   "*": "deny"

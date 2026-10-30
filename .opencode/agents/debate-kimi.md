@@ -1,8 +1,8 @@
 ---
-description: Neutral debate participant using Kimi K3 from OpenCode Go (max)
+description: Neutral debate participant from Moonshot AI
 mode: subagent
 hidden: true
-model: opencode-go/kimi-k3
+model: commandcode/moonshotai/Kimi-K3
 variant: max
 permission:
   "*": "deny"

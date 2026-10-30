@@ -76,29 +76,29 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
     version: 2,
     participants: {
       "debate-openai": {
-        description: "Neutral debate participant using OpenAI GPT-5.6 Sol (xhigh)",
-        model: "openai/gpt-5.6-sol",
-        variant: "xhigh",
+        description: "Neutral debate participant from OpenAI",
+        model: "openai/gpt-6-astra",
+        variant: "high",
       },
       "debate-glm": {
-        description: "Neutral debate participant using GLM-5.2 from OpenCode Go (max)",
-        model: "opencode-go/glm-5.2",
+        description: "Neutral debate participant from Z.ai",
+        model: "commandcode/zai-org/GLM-5.3",
         variant: "max",
       },
       "debate-kimi": {
-        description: "Neutral debate participant using Kimi K3 from OpenCode Go (max)",
-        model: "opencode-go/kimi-k3",
+        description: "Neutral debate participant from Moonshot AI",
+        model: "commandcode/moonshotai/Kimi-K3",
         variant: "max",
       },
       "debate-anthropic": {
-        description: "Neutral debate participant using Claude Opus 5 through OpenRouter (high)",
+        description: "Neutral debate participant from Anthropic",
         model: "openrouter/anthropic/claude-opus-5",
         variant: "high",
       },
       "debate-qwen": {
-        description: "Neutral debate participant using Qwen 3.7 Max from OpenCode Go (max)",
-        model: "opencode-go/qwen3.7-max",
-        variant: "max",
+        description: "Neutral debate participant from Alibaba",
+        model: "commandcode/Qwen/Qwen3.8-Max-0902",
+        variant: "xhigh",
       },
     },
     sets: {
@@ -109,18 +109,18 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
       },
       cheap: {
         continuation: "ask",
-        participants: ["debate-glm", "debate-qwen", "debate-kimi"],
+        participants: ["debate-glm", "debate-qwen", "debate-openai"],
       },
     },
     auto_debate: {
-      enabled: false,
-      set: "default",
+      enabled: true,
+      set: "cheap",
       max_rounds: 3,
       persist_transcripts: true,
     },
     mini_debate: {
-      participant: "debate-kimi",
-      max_rounds: 3,
+      participant: "debate-glm",
+      max_rounds: 5,
     },
   })
 })
@@ -128,9 +128,9 @@ test("packaged config.yaml preserves the shipped version 2 participant registry"
 test("packaged compatibility exports are loaded from config.yaml", () => {
   assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "cheap"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
-  assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-kimi"])
+  assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-openai"])
   assert.equal(DEBATE_PARTICIPANTS.length, 5)
-  assert.deepEqual(loadPackagedRegistry().miniDebate, { participant: "debate-kimi", maxRounds: 3 })
+  assert.deepEqual(loadPackagedRegistry().miniDebate, { participant: "debate-glm", maxRounds: 5 })
 })
 
 test("description and variant are optional source fields", () => {

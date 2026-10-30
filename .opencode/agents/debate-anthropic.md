@@ -1,5 +1,5 @@
 ---
-description: Neutral debate participant using Claude Opus 5 through OpenRouter (high)
+description: Neutral debate participant from Anthropic
 mode: subagent
 hidden: true
 model: openrouter/anthropic/claude-opus-5

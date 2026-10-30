@@ -1,9 +1,9 @@
 ---
-description: Neutral debate participant using Qwen 3.7 Max from OpenCode Go (max)
+description: Neutral debate participant from Alibaba
 mode: subagent
 hidden: true
-model: opencode-go/qwen3.7-max
-variant: max
+model: commandcode/Qwen/Qwen3.8-Max-0902
+variant: xhigh
 permission:
   "*": "deny"
   read:

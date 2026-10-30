@@ -13,7 +13,7 @@ import {
 test("participant registry defines the supported sets", () => {
   assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "cheap"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
-  assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-kimi"])
+  assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-openai"])
 })
 
 test("participant registry contains metadata for every referenced agent", () => {
@@ -28,7 +28,7 @@ test("anthropic participant uses Claude Opus 5 through OpenRouter", () => {
 
   assert.deepEqual(participant, {
     agent: "debate-anthropic",
-    description: "Neutral debate participant using Claude Opus 5 through OpenRouter (high)",
+    description: "Neutral debate participant from Anthropic",
     model: "openrouter/anthropic/claude-opus-5",
     variant: "high",
   })
@@ -40,9 +40,9 @@ test("renderParticipantAgent combines participant metadata with the shared body"
 
   const rendered = renderParticipantAgent(participant, "Shared participant instructions.\n")
 
-  assert.match(rendered, /description: Neutral debate participant using OpenAI GPT-5.6 Sol \(xhigh\)/)
-  assert.match(rendered, /model: openai\/gpt-5\.6-sol/)
-  assert.match(rendered, /variant: xhigh/)
+  assert.match(rendered, /description: Neutral debate participant from OpenAI/)
+  assert.match(rendered, /model: openai\/gpt-6-astra/)
+  assert.match(rendered, /variant: high/)
   assert.match(rendered, /^hidden: true$/m)
   assert.match(rendered, /permission:\n  "\*": "deny"/)
   assert.match(rendered, /  read:\n    "\*": "allow"/)

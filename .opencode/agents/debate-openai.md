@@ -1,9 +1,9 @@
 ---
-description: Neutral debate participant using OpenAI GPT-5.6 Sol (xhigh)
+description: Neutral debate participant from OpenAI
 mode: subagent
 hidden: true
-model: openai/gpt-5.6-sol
-variant: xhigh
+model: openai/gpt-6-astra
+variant: high
 permission:
   "*": "deny"
   read:
