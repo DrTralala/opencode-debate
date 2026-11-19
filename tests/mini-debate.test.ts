@@ -62,7 +62,7 @@ test("the first member of a custom configured default set is the default partici
 test("mini-debate configuration supplies participant and rounds defaults", () => {
   const configured: DebateRegistry = {
     ...REGISTRY,
-    miniDebate: { participant: "three", maxRounds: 7 },
+    miniDebate: { enabled: true, participant: "three", maxRounds: 7 },
   }
   const parsed = parseMiniDebateArguments("A topic", configured)
 
@@ -75,7 +75,7 @@ test("mini-debate configuration supplies participant and rounds defaults", () =>
 })
 
 test("partial mini-debate configuration keeps the default-set participant and configured rounds", () => {
-  const configured: DebateRegistry = { ...REGISTRY, miniDebate: { maxRounds: 4 } }
+  const configured: DebateRegistry = { ...REGISTRY, miniDebate: { enabled: true, maxRounds: 4 } }
   const parsed = parseMiniDebateArguments("A topic", configured)
 
   assert.equal(parsed.ok, true)
@@ -88,7 +88,7 @@ test("partial mini-debate configuration keeps the default-set participant and co
 test("command flags override the configured participant and rounds", () => {
   const configured: DebateRegistry = {
     ...REGISTRY,
-    miniDebate: { participant: "three", maxRounds: 7 },
+    miniDebate: { enabled: true, participant: "three", maxRounds: 7 },
   }
   const parsed = parseMiniDebateArguments("--participant:one --rounds 2 A topic", configured)
 

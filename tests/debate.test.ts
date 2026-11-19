@@ -55,7 +55,7 @@ const DYNAMIC_REGISTRY: DebateRegistry = {
 const HANDOFF_REGISTRY: DebateRegistry = {
   ...DYNAMIC_REGISTRY,
   defaultSet: "default",
-  miniDebate: { participant: "one", maxRounds: 3 },
+  miniDebate: { enabled: true, participant: "one", maxRounds: 3 },
 }
 
 const MINI_ALIAS_ONE = `${MINI_DEBATE_ALIAS_PREFIX}one`

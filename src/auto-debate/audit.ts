@@ -1,4 +1,5 @@
 import type { Brief, CycleResult, Discussion, Evaluation, Turn } from "./types.ts"
+import { roundBudget, type RoundBudget } from "./state.ts"
 
 export const AUTOMATIC_PARTICIPANT_PREFIX = "opencode-debate-auto-"
 
@@ -14,6 +15,7 @@ export type DiscussionSummary = {
   status: Discussion["status"]
   cycle: number
   maxRounds: number
+  roundBudget: RoundBudget
   participants: string[]
   persistence: Persistence
   canonicalFindings?: Turn[]
@@ -63,6 +65,7 @@ export function discussionSummary(discussion: Discussion): DiscussionSummary {
     status: discussion.status,
     cycle: discussion.cycle,
     maxRounds: discussion.config.maxRounds,
+    roundBudget: roundBudget(discussion),
     participants: discussion.panel.map(({ participant }) => participantName(participant.agent)),
     persistence,
   }

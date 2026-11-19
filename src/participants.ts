@@ -21,6 +21,7 @@ export type DebateParticipant = Readonly<{
 export type DebateParticipantSets = Readonly<Record<string, readonly string[]>>
 
 export type MiniDebateConfig = Readonly<{
+  enabled: boolean
   participant?: string
   maxRounds: number
 }>
@@ -93,10 +94,10 @@ const TOP_LEVEL_FIELDS = new Set(["version", "participants", "sets", "auto_debat
 const PARTICIPANT_FIELDS = new Set(["description", "model", "variant"])
 const SET_FIELDS = new Set(["participants", "default", "continuation"])
 const AUTO_DEBATE_FIELDS = new Set(["enabled", "set", "max_rounds", "persist_transcripts"])
-const MINI_DEBATE_FIELDS = new Set(["participant", "max_rounds"])
+const MINI_DEBATE_FIELDS = new Set(["enabled", "participant", "max_rounds"])
 const MINI_DEBATE_MIN_ROUNDS = 1
 const MINI_DEBATE_MAX_ROUNDS = 10
-const DEFAULT_MINI_DEBATE_CONFIG: MiniDebateConfig = Object.freeze({ maxRounds: 3 })
+const DEFAULT_MINI_DEBATE_CONFIG: MiniDebateConfig = Object.freeze({ enabled: true, maxRounds: 3 })
 const PACKAGED_CONFIG_PATH = fileURLToPath(new URL("../config.example.yaml", import.meta.url))
 
 function isMapping(value: unknown): value is Record<string, unknown> {
@@ -147,8 +148,12 @@ function parseAutoDebateConfig(value: unknown, configPath: string): AutoDebateCo
   const maxRounds = Object.hasOwn(value, "max_rounds")
     ? value.max_rounds
     : DEFAULT_AUTO_DEBATE_CONFIG.maxRounds
-  if (typeof maxRounds !== "number" || !Number.isSafeInteger(maxRounds) || maxRounds < 3) {
-    invalid(configPath, "auto_debate.max_rounds", "expected a safe integer greater than or equal to 3")
+  if (
+    typeof maxRounds !== "number"
+    || !Number.isSafeInteger(maxRounds)
+    || (maxRounds !== 0 && maxRounds < 3)
+  ) {
+    invalid(configPath, "auto_debate.max_rounds", "expected 0 or a safe integer greater than or equal to 3")
   }
 
   const persistTranscripts = Object.hasOwn(value, "persist_transcripts")
@@ -166,6 +171,13 @@ function parseMiniDebateConfig(value: unknown, configPath: string): MiniDebateCo
   if (value === undefined) return DEFAULT_MINI_DEBATE_CONFIG
   if (!isMapping(value)) invalid(configPath, "mini_debate", "expected a mapping")
   assertKnownFields(value, MINI_DEBATE_FIELDS, configPath, "mini_debate")
+
+  const enabled = Object.hasOwn(value, "enabled")
+    ? value.enabled
+    : DEFAULT_MINI_DEBATE_CONFIG.enabled
+  if (typeof enabled !== "boolean") {
+    invalid(configPath, "mini_debate.enabled", "expected a boolean")
+  }
 
   const participant = optionalNonEmptyString(value.participant, configPath, "mini_debate.participant")
   const maxRounds = Object.hasOwn(value, "max_rounds")
@@ -185,6 +197,7 @@ function parseMiniDebateConfig(value: unknown, configPath: string): MiniDebateCo
   }
 
   return {
+    enabled,
     ...(participant === undefined ? {} : { participant }),
     maxRounds,
   }

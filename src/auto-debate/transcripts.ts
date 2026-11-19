@@ -13,6 +13,7 @@ import {
   writeSync,
 } from "node:fs"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
+import { UNLIMITED_ROUND_CHECKPOINT } from "./state.ts"
 import type { Brief, CycleResult, Discussion, Evaluation, TranscriptCheckpointResult, Turn } from "./types.ts"
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
@@ -76,6 +77,10 @@ function safeInteger(value: unknown, minimum: number): value is number {
   return Number.isSafeInteger(value) && (value as number) >= minimum
 }
 
+function roundLimitPerCycle(maxRounds: number): number {
+  return maxRounds === 0 ? UNLIMITED_ROUND_CHECKPOINT : maxRounds
+}
+
 function isOneOf<T extends readonly string[]>(value: unknown, choices: T): value is T[number] {
   return typeof value === "string" && choices.includes(value)
 }
@@ -114,7 +119,9 @@ function assertDiscussion(value: Discussion): void {
   }
   if (!isRecord(value.owner) || !nonEmptyString(value.owner.sessionID) || !nonEmptyString(value.owner.agent)
     || !isRecord(value.config) || typeof value.config.persistTranscripts !== "boolean"
-    || !safeInteger(value.config.maxRounds, 1)
+    || !safeInteger(value.config.maxRounds, 0)
+    || (value.config.maxRounds !== 0 && value.config.maxRounds < 3)
+    || (value.roundsSpent !== undefined && !safeInteger(value.roundsSpent, 0))
     || !isRecord(value.brief) || !nonEmptyString(value.brief.question) || !nonEmptyString(value.brief.objective)
     || !Array.isArray(value.brief.facts) || !value.brief.facts.every((item) => typeof item === "string")
     || !Array.isArray(value.brief.assumptions) || !value.brief.assumptions.every((item) => typeof item === "string")
@@ -130,19 +137,20 @@ function assertDiscussion(value: Discussion): void {
     fail("discussion fields are invalid or incomplete")
   }
   assertAbsoluteProjectPath(value.owner.directory)
+  const maxCycleRounds = roundLimitPerCycle(value.config.maxRounds)
 
   const resultCycles = new Set<number>()
   for (const result of value.results) {
     if (!isRecord(result) || !safeInteger(result.cycle, 1) || resultCycles.has(result.cycle)
       || result.cycle > value.cycle
-      || !safeInteger(result.rounds, 0) || result.rounds > value.config.maxRounds
+      || !safeInteger(result.rounds, 0) || result.rounds > maxCycleRounds
       || !isOneOf(result.status, RESULT_STATUSES) || !isOneOf(result.reason, RESULT_REASONS)
       || !Array.isArray(result.turns) || !Array.isArray(result.failures) || typeof result.consensus !== "boolean") {
       fail("contains an invalid cycle result")
     }
     resultCycles.add(result.cycle)
     for (const turn of result.turns) {
-      assertTurn(turn, value.config.maxRounds)
+      assertTurn(turn, maxCycleRounds)
       if (turn.cycle !== result.cycle) fail("cycle result contains a turn from another cycle")
     }
   }
@@ -155,7 +163,7 @@ function assertDiscussion(value: Discussion): void {
     evaluationCycles.add(evaluation.cycle)
   }
   for (const turn of value.pendingTurns) {
-    assertTurn(turn, value.config.maxRounds)
+    assertTurn(turn, maxCycleRounds)
     if (turn.cycle > value.cycle) fail("contains a pending turn from a future cycle")
   }
   for (const followup of value.followups) {
@@ -200,6 +208,13 @@ function sortTurns(turns: readonly Turn[], panelOrder: ReadonlyMap<string, numbe
 }
 
 function transcriptHeader(discussion: Discussion): string {
+  const budget = discussion.config.maxRounds === 0
+    ? `Unlimited (three-round evaluation checkpoints)`
+    : `${discussion.config.maxRounds} total rounds across all cycles`
+  return `# Automatic debate\n\n**Discussion:** ${discussion.id}\n**Total round budget:** ${budget}\n\n${ownershipMarker(discussion)}\n\n`
+}
+
+function legacyTranscriptHeader(discussion: Discussion): string {
   return `# Automatic debate\n\n**Discussion:** ${discussion.id}\n**Maximum rounds per cycle:** ${discussion.config.maxRounds}\n\n${ownershipMarker(discussion)}\n\n`
 }
 
@@ -569,6 +584,7 @@ function assertFrameEvaluation(value: unknown): asserts value is Evaluation {
 
 function validateTranscriptEvent(value: unknown, discussion: Discussion): TranscriptEvent {
   if (!isRecord(value) || typeof value.kind !== "string") fail("frame event is invalid")
+  const maxCycleRounds = roundLimitPerCycle(discussion.config.maxRounds)
   switch (value.kind) {
     case "brief":
       if (!exactKeys(value, ["kind", "brief"])) fail("brief frame event has unexpected fields")
@@ -585,7 +601,7 @@ function validateTranscriptEvent(value: unknown, discussion: Discussion): Transc
       return value as unknown as TranscriptEvent
     case "turn":
       if (!exactKeys(value, ["kind", "turn"])) fail("turn frame event has unexpected fields")
-      assertFrameTurn(value.turn, discussion.config.maxRounds)
+      assertFrameTurn(value.turn, maxCycleRounds)
       if (value.turn.cycle > discussion.cycle) fail("turn frame event is from a future cycle")
       return value as unknown as TranscriptEvent
     case "followup":
@@ -598,7 +614,7 @@ function validateTranscriptEvent(value: unknown, discussion: Discussion): Transc
     case "cycle-result":
       if (!exactKeys(value, ["kind", "cycle", "rounds", "status", "reason", "consensus"])
         || !safeInteger(value.cycle, 1) || value.cycle > discussion.cycle
-        || !safeInteger(value.rounds, 0) || value.rounds > discussion.config.maxRounds
+        || !safeInteger(value.rounds, 0) || value.rounds > maxCycleRounds
         || !isOneOf(value.status, RESULT_STATUSES) || !isOneOf(value.reason, RESULT_REASONS)
         || typeof value.consensus !== "boolean") {
         fail("cycle-result frame event is invalid")
@@ -617,7 +633,7 @@ function validateTranscriptEvent(value: unknown, discussion: Discussion): Transc
       if (!exactKeys(value, keys) || !isOneOf(value.status, STATUSES)
         || !safeInteger(value.cycle, 1) || value.cycle > discussion.cycle
         || hasResult && (!isOneOf(value.result, RESULT_STATUSES) || !isOneOf(value.resultReason, RESULT_REASONS)
-          || !safeInteger(value.roundsCompleted, 0) || value.roundsCompleted > discussion.config.maxRounds)
+          || !safeInteger(value.roundsCompleted, 0) || value.roundsCompleted > maxCycleRounds)
         || !safeInteger(value.roundsWithTurns, 0) || typeof value.evaluationRecorded !== "boolean"
         || typeof value.stateDigest !== "string" || !/^[a-f0-9]{64}$/u.test(value.stateDigest)) {
         fail("outcome frame event is invalid")
@@ -692,10 +708,15 @@ function parseFramePayload(payload: Buffer, discussion: Discussion, previousEven
 
 function parseTranscriptContent(content: Buffer, discussion: Discussion): TranscriptLog {
   const header = Buffer.from(transcriptHeader(discussion), "utf8")
-  if (content.length < header.length || !content.subarray(0, header.length).equals(header)) {
+  const legacyHeader = Buffer.from(legacyTranscriptHeader(discussion), "utf8")
+  const selectedHeader = content.length >= header.length && content.subarray(0, header.length).equals(header)
+    ? header
+    : content.length >= legacyHeader.length && content.subarray(0, legacyHeader.length).equals(legacyHeader)
+      ? legacyHeader : undefined
+  if (selectedHeader === undefined) {
     fail("destination owner marker or framed transcript header does not match this discussion")
   }
-  let offset = header.length
+  let offset = selectedHeader.length
   let sequence = 1
   const events: TranscriptEvent[] = []
   const keys = new Set<string>()

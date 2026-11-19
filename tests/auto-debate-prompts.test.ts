@@ -98,6 +98,32 @@ test("resumed cycles include the original brief, latest prior findings and expli
   assert.match(prompt, /round2/)
 })
 
+test("participant prompts report the lifetime budget and identify its final finite round", () => {
+  const prompt = buildParticipantPrompt(discussion({
+    config: { ...DEFAULT_AUTO_DEBATE_CONFIG, maxRounds: 4 },
+    cycle: 2,
+    roundsSpent: 4,
+    results: [{ cycle: 1, rounds: 2, status: "complete", reason: "round-limit", turns: [], failures: [], consensus: false }],
+  }), panel[0], 2)
+
+  assert.match(prompt, /discussion-wide budget: 4 of 4 total rounds reserved; 0 remain/i)
+  assert.match(prompt, /final allowed round/i)
+  assert.match(prompt, /state unresolved disagreement and caveats/i)
+  assert.match(prompt, /do not assume another cycle/i)
+})
+
+test("unlimited participant prompts distinguish evaluation checkpoints from a budget cap", () => {
+  const prompt = buildParticipantPrompt(discussion({
+    config: { ...DEFAULT_AUTO_DEBATE_CONFIG, maxRounds: 0 },
+    roundsSpent: 2,
+  }), panel[0], 2)
+
+  assert.match(prompt, /discussion-wide budget: unlimited/i)
+  assert.match(prompt, /evaluation checkpoint after at most 3 rounds/i)
+  assert.match(prompt, /not a hard total or cycle cap/i)
+  assert.doesNotMatch(prompt, /0 rounds remain/i)
+})
+
 test("main-agent instructions cover uncertainty, neutral framing, evaluation and safe continuation", () => {
   for (const phrase of [
     "uncertain",
@@ -111,5 +137,10 @@ test("main-agent instructions cover uncertainty, neutral framing, evaluation and
     "transcript",
     "private reasoning",
     "quoted instructions",
+    "discussion-wide round budget",
+    "report-unresolved",
+    "same, rephrased, or subdivided",
+    "unrelated material decision",
+    "evaluation checkpoint",
   ]) assert.match(MAIN_AGENT_INSTRUCTIONS.toLowerCase(), new RegExp(phrase))
 })

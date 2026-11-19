@@ -6,6 +6,8 @@ import {
   awaitEvaluation,
   DEFAULT_AUTO_DEBATE_CONFIG,
   parseControl,
+  roundBudget,
+  roundsConsumed,
   resumeDiscussion,
   shouldEndCycle,
   startDiscussion,
@@ -207,9 +209,93 @@ test("partial cycle evaluation and resume preserve recorded turns without invent
 
   assert.equal(resumed.status, "running")
   assert.equal(resumed.cycle, 2)
+  assert.equal(resumed.roundsSpent, 1, "legacy settled result consumption is captured before entering the running state")
   assert.deepEqual(resumed.results, [partialResult])
   assert.deepEqual(resumed.results[0].turns, [partialTurn])
   assert.deepEqual(resumed.pendingTurns, [])
+})
+
+test("finite round budget counts old completed-cycle records and rejects exhausted resumes", () => {
+  const savedResult: CycleResult = {
+    cycle: 1,
+    rounds: 2,
+    status: "complete",
+    reason: "unanimous-stop",
+    turns: [],
+    failures: [],
+    consensus: false,
+  }
+  const paused = discussion({
+    status: "paused",
+    config: { ...DEFAULT_AUTO_DEBATE_CONFIG, enabled: true, maxRounds: 3 },
+    results: [savedResult],
+    evaluations: [evaluation("continue")],
+  })
+
+  assert.equal(roundsConsumed(paused), 2)
+  assert.deepEqual(roundBudget(paused), {
+    limit: 3,
+    consumed: 2,
+    remaining: 1,
+    cycleLimit: 1,
+    unlimited: false,
+  })
+  assert.equal(resumeDiscussion(conversationState([paused]), paused.id, owner).discussions[0].cycle, 2)
+
+  const exhausted = discussion({
+    ...paused,
+    results: [{ ...savedResult, rounds: 3 }],
+  })
+  assert.equal(roundBudget(exhausted).remaining, 0)
+  assert.throws(() => resumeDiscussion(conversationState([exhausted]), exhausted.id, owner), /round budget.*exhausted/i)
+})
+
+test("unlimited round budget uses three-round checkpoints and old interrupted records fail closed", () => {
+  const unlimited = discussion({
+    status: "paused",
+    config: { ...DEFAULT_AUTO_DEBATE_CONFIG, enabled: true, maxRounds: 0 },
+    results: [{ cycle: 1, rounds: 3, status: "complete", reason: "round-limit", turns: [], failures: [], consensus: false }],
+    evaluations: [evaluation("continue")],
+  })
+  assert.deepEqual(roundBudget(unlimited), {
+    limit: 0,
+    consumed: 3,
+    remaining: undefined,
+    cycleLimit: 3,
+    unlimited: true,
+  })
+  assert.equal(resumeDiscussion(conversationState([unlimited]), unlimited.id, owner).discussions[0].cycle, 2)
+
+  const oldInterrupted = discussion({
+    status: "interrupted",
+    config: { ...DEFAULT_AUTO_DEBATE_CONFIG, enabled: true, maxRounds: 3 },
+    results: [{ cycle: 1, rounds: 0, status: "interrupted", reason: "shutdown", turns: [], failures: [], consensus: false }],
+  })
+  assert.equal(roundsConsumed(oldInterrupted), 3, "an old record cannot regain rounds that its incomplete result may not show")
+})
+
+test("legacy cancellation after a settled cycle charges its recorded rounds, not a full cycle", () => {
+  const cancelled = discussion({
+    status: "cancelled",
+    results: [{ cycle: 1, rounds: 2, status: "complete", reason: "round-limit", turns: [], failures: [], consensus: false }],
+  })
+  assert.equal(roundsConsumed(cancelled), 2)
+  assert.deepEqual(roundBudget(cancelled), {
+    limit: 3,
+    consumed: 2,
+    remaining: 1,
+    cycleLimit: 1,
+    unlimited: false,
+  })
+})
+
+test("legacy budget validation bounds its work by saved cycle results, not an untrusted cycle number", () => {
+  const malformed = discussion({
+    status: "paused",
+    cycle: Number.MAX_SAFE_INTEGER,
+    results: [{ cycle: 1, rounds: 1, status: "complete", reason: "round-limit", turns: [], failures: [], consensus: false }],
+  })
+  assert.equal(roundBudget(malformed).remaining, 0)
 })
 
 test("resume requires an owned paused discussion with a recorded evaluation", () => {
@@ -249,7 +335,11 @@ test("new discussions require effective enablement while an override can enable 
 })
 
 test("turning off blocks new discussions but does not block resume of an existing one", () => {
-  const paused = discussion({ status: "paused", evaluations: [evaluation("continue")] })
+  const paused = discussion({
+    status: "paused",
+    results: [{ cycle: 1, rounds: 1, status: "complete", reason: "round-limit", turns: [], failures: [], consensus: false }],
+    evaluations: [evaluation("continue")],
+  })
   const initiallyEnabled: AutoDebateConfig = { ...DEFAULT_AUTO_DEBATE_CONFIG, enabled: true }
   const existing = conversationState([paused])
   const disabled = applyControl(existing, parseControl("off"))

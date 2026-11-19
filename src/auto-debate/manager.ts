@@ -5,7 +5,10 @@ import {
   applyEvaluation,
   awaitEvaluation,
   DEFAULT_AUTO_DEBATE_CONFIG,
+  roundBudget,
   resumeDiscussion,
+  roundsConsumed,
+  roundsInCycle,
   shouldEndCycle,
   startDiscussion,
   type Control,
@@ -83,6 +86,11 @@ function safeJson(value: unknown): string {
   })
 }
 
+function roundBudgetSummary(discussion: Discussion) {
+  const { limit, consumed, remaining, unlimited } = roundBudget(discussion)
+  return { consumed, limit, remaining: remaining ?? null, unlimited }
+}
+
 function deliveryWarning(discussion: Discussion, cycle: number, reason?: string): void {
   const warnings = discussion.deliveryUncertainCycles ?? []
   const existing = warnings.findIndex((item) => item.cycle === cycle)
@@ -109,6 +117,7 @@ function formatDeliveryIntent(state: ConversationState, outboxIDs: readonly stri
     cycle: item.cycle,
     status: result.status,
     rounds: result.rounds,
+    roundBudget: roundBudgetSummary(discussion),
     consensus: result.consensus,
     turns: result.turns,
     failures: result.failures,
@@ -443,6 +452,30 @@ export function createManager(options: ManagerOptions): Manager {
     })
   }
 
+  async function reserveRound(
+    entry: Entry,
+    discussionID: string,
+    generation: number,
+    cycle: number,
+    round: number,
+    cycleLimit: number,
+  ): Promise<boolean> {
+    return lock(discussionWrites, discussionKey(entry.owner, discussionID), async () => {
+      const discussion = currentGeneration(entry, discussionID, generation)
+      if (!discussion || discussion.cycle !== cycle) return false
+      const budget = roundBudget(discussion)
+      if (!budget.unlimited && budget.remaining === 0) {
+        throw new Error("The automatic-debate round budget is exhausted")
+      }
+      if (round > cycleLimit) return false
+      discussion.roundsSpent = (discussion.roundsSpent ?? budget.consumed) + 1
+      // Persist before the first participant call so a crash or lost response
+      // cannot make an already-dispatched round free.
+      await persist(entry, discussion)
+      return true
+    })
+  }
+
   async function invokeMember(
     entry: Entry,
     discussionID: string,
@@ -500,12 +533,17 @@ export function createManager(options: ManagerOptions): Manager {
     const initial = currentGeneration(entry, discussionID, generation)
     if (!initial) return
     const cycle = initial.cycle
-    for (let round = 1; round <= initial.config.maxRounds; round++) {
+    const cycleLimit = roundBudget(initial).cycleLimit
+    if (cycleLimit < 1) throw new Error("The automatic-debate round budget is exhausted")
+    for (let round = 1; round <= cycleLimit; round++) {
       const discussion = currentGeneration(entry, discussionID, generation)
       if (!discussion) return
+      if (!await reserveRound(entry, discussionID, generation, cycle, round, cycleLimit)) return
+      const reserved = currentGeneration(entry, discussionID, generation)
+      if (!reserved) return
       const schema: DebateResponseSchema = cycle === 1 && round === 1 ? "round1" : "round2"
-      const members = discussion.panel.map((member) => structuredClone(member))
-      const prompts = members.map((member) => buildParticipantPrompt(discussion, member, round))
+      const members = reserved.panel.map((member) => structuredClone(member))
+      const prompts = members.map((member) => buildParticipantPrompt(reserved, member, round))
       const results = await Promise.allSettled(members.map((member, index) => invokeMember(
         entry, discussionID, generation, member, prompts[index], cycle, round, schema,
       )))
@@ -533,7 +571,7 @@ export function createManager(options: ManagerOptions): Manager {
         return
       }
       const latestTurns = settled.flatMap((result) => result.turn ? [result.turn] : [])
-      if (shouldEndCycle({ cycle, round, maxRounds: stillRunning.config.maxRounds, turns: latestTurns })) {
+      if (shouldEndCycle({ cycle, round, maxRounds: cycleLimit, turns: latestTurns })) {
         await completeCycle(entry, discussionID, generation, {
           round,
           status: "complete",
@@ -599,7 +637,7 @@ export function createManager(options: ManagerOptions): Manager {
         if (!discussion) return undefined
         const turns = resultTurns(discussion)
         if (!discussion.results.some((result) => result.cycle === discussion.cycle)) {
-          discussion.results.push({ cycle: discussion.cycle, rounds: Math.max(0, ...turns.map((turn) => turn.round)),
+          discussion.results.push({ cycle: discussion.cycle, rounds: roundsInCycle(discussion),
             status: "interrupted", reason: "participant-failure", turns, failures: [{ participant: "manager", message: message(error) }], consensus: false })
         }
         discussion.pendingTurns = []
@@ -692,6 +730,10 @@ export function createManager(options: ManagerOptions): Manager {
   }
 
   function statusText(entry: Entry, discussion: Discussion): string {
+    const budget = roundBudget(discussion)
+    const budgetText = budget.unlimited
+      ? `${budget.consumed} total rounds used; unlimited total budget`
+      : `${budget.consumed} of ${budget.limit} total rounds used; ${budget.remaining} remaining`
     const delivery = discussion.deliveryUncertainCycles?.map((item) => `cycle ${item.cycle} delivery uncertain: ${item.reason}`).join("; ")
     const pending = entry.state!.outbox.filter((item) => item.discussionID === discussion.id && item.state === "pending")
       .map((item) => `cycle ${item.cycle} result notification pending`)
@@ -703,7 +745,7 @@ export function createManager(options: ManagerOptions): Manager {
       && discussion.cancellation.pendingSessionIDs.length === 0
       ? "scheduling cancelled; all recorded participant cessations confirmed" : undefined
     return [
-      `${discussion.id}: ${discussion.status}, cycle ${discussion.cycle}`,
+      `${discussion.id}: ${discussion.status}, cycle ${discussion.cycle}; ${budgetText}`,
       delivery,
       ...pending,
       ...sent,
@@ -803,9 +845,10 @@ export function createManager(options: ManagerOptions): Manager {
     if (current.status === "running") {
       const turns = resultTurns(current)
       next.results = [...current.results, {
-        cycle: current.cycle, rounds: Math.max(0, ...turns.map((turn) => turn.round)),
+        cycle: current.cycle, rounds: roundsInCycle(current),
         status: "cancelled", reason, turns, failures: [], consensus: false,
       }]
+      next.roundsSpent ??= roundsConsumed(current)
       next.pendingTurns = []
     }
     entry.state = nextState
@@ -867,10 +910,12 @@ export function createManager(options: ManagerOptions): Manager {
   function fenceForShutdown(discussion: Discussion): boolean {
     if (discussion.status !== "running") return false
     const turns = resultTurns(discussion)
+    const rounds = roundsInCycle(discussion)
+    discussion.roundsSpent ??= roundsConsumed(discussion)
     discussion.status = "interrupted"
     discussion.generation++
     if (!discussion.results.some((result) => result.cycle === discussion.cycle)) {
-      discussion.results.push({ cycle: discussion.cycle, rounds: Math.max(0, ...turns.map((turn) => turn.round)),
+      discussion.results.push({ cycle: discussion.cycle, rounds,
         status: "interrupted", reason: "shutdown", turns, failures: [], consensus: false })
     }
     discussion.pendingTurns = []
@@ -905,6 +950,7 @@ export function createManager(options: ManagerOptions): Manager {
         status: "running",
         generation: 0,
         cycle: 1,
+        roundsSpent: 0,
         results: [],
         evaluations: [],
         pendingTurns: [],
@@ -1219,6 +1265,8 @@ export function createManager(options: ManagerOptions): Manager {
           assertNoMaintenance(owner.sessionID)
           if (discussion.status === "running") {
             const uncertain = reconciled.filter((item) => item.state === "uncertain" || item.state === "fenced" && item.cessation === "unconfirmed")
+            const rounds = roundsInCycle(discussion)
+            discussion.roundsSpent ??= roundsConsumed(discussion)
             discussion.status = "interrupted"
             discussion.generation++
             discussion.cancellation = {
@@ -1227,7 +1275,7 @@ export function createManager(options: ManagerOptions): Manager {
             }
             if (!discussion.results.some((result) => result.cycle === discussion.cycle)) {
               const turns = resultTurns(discussion)
-              discussion.results.push({ cycle: discussion.cycle, rounds: Math.max(0, ...turns.map((turn) => turn.round)),
+              discussion.results.push({ cycle: discussion.cycle, rounds,
                 status: "interrupted", reason: "shutdown", turns, failures: [{ participant: "manager", message: "Recovered an in-flight cycle; execution was not replayed." }], consensus: false })
             }
             discussion.pendingTurns = []

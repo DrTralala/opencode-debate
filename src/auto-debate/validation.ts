@@ -119,7 +119,9 @@ function isDiscussion(value: unknown): boolean {
   const config = value.config
   if (typeof config.enabled !== "boolean"
     || !Number.isSafeInteger(config.maxRounds)
-    || (config.maxRounds as number) < 3
+    || (config.maxRounds !== 0 && (config.maxRounds as number) < 3)
+    || (value.roundsSpent !== undefined
+      && (!Number.isSafeInteger(value.roundsSpent) || (value.roundsSpent as number) < 0))
     || typeof config.persistTranscripts !== "boolean"
     || !isBrief(value.brief)
     || !Array.isArray(value.panel)
@@ -311,6 +313,7 @@ const OPTIONAL_UNDEFINED = new Set([
   ["legacyOutboxIDs"],
   ["state", "override"],
   ["state", "discussions", "[]", "config", "set"],
+  ["state", "discussions", "[]", "roundsSpent"],
   ["state", "discussions", "[]", "deliveryUncertainCycles"],
   ["state", "discussions", "[]", "transcriptPath"],
   ["state", "discussions", "[]", "transcriptError"],

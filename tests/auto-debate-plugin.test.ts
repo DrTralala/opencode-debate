@@ -41,7 +41,7 @@ after(() => {
   for (const root of temporaryStateRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function fakeInput(directory = ownerA.directory) {
+function fakeInput(directory = ownerA.directory, voteToStop = true) {
   const projectID = "automatic-debate-project"
   const stateRoot = mkdtempSync(join(tmpdir(), "opencode-debate-plugin-"))
   temporaryStateRoots.push(stateRoot)
@@ -122,7 +122,7 @@ function fakeInput(directory = ownerA.directory) {
       const roundOne = text.includes("Response schema: round1")
       const answer = roundOne
         ? JSON.stringify({ turn: "Independent finding" })
-        : JSON.stringify({ turn: "Converged finding", consensus_reached: true, recommend_stopping: true })
+        : JSON.stringify({ turn: voteToStop ? "Converged finding" : "Still disputed", consensus_reached: voteToStop, recommend_stopping: voteToStop })
       const assistantID = `assistant-${messageID}`
       const assistant = {
         info: {
@@ -209,8 +209,8 @@ function configFixture() {
   }
 }
 
-async function makePlugin(value: DebateRegistry = registry, directory = ownerA.directory) {
-  const fake = fakeInput(directory)
+async function makePlugin(value: DebateRegistry = registry, directory = ownerA.directory, voteToStop = true) {
+  const fake = fakeInput(directory, voteToStop)
   const hooks = await createAutomaticDebatePlugin(value)(fake.input)
   const config = configFixture()
   await hooks.config?.(config as never)
@@ -329,6 +329,10 @@ test("eligible main agents receive uncertainty-trigger guidance through the perm
   assert.match(definition.description, /independent specialist/i)
   assert.match(definition.description, /do not enable/i)
   assert.match(definition.description, /evaluat/i)
+  assert.match(definition.description, /discussion-wide.*round budget/i)
+  assert.match(definition.description, /act if supported or report-unresolved/i)
+  assert.match(definition.description, /same, rephrased, or subdivided/i)
+  assert.match(definition.description, /unrelated material decision/i)
   assert.equal((config.permission as RecordValue).auto_debate, "deny")
   assert.equal(((config.agent as Record<string, RecordValue>).build.permission as RecordValue).auto_debate, "allow")
   assert.equal((((config.agent as Record<string, RecordValue>).reviewer.permission as RecordValue).auto_debate), "deny")
@@ -490,7 +494,8 @@ test("manager-backed start, findings, evaluated resume after off, and owned canc
   const started = start.discussion as RecordValue
   assert.equal(started.status, "running")
   assert.equal(started.cycle, 1)
-  assert.equal(started.maxRounds, 3)
+  assert.deepEqual(started.roundBudget, { consumed: 0, limit: 3, remaining: 3, unlimited: false })
+  assert.equal(started.maxRounds, undefined)
   assert.deepEqual(started.participants, panel)
 
   const completed = await waitFor(async () => JSON.parse(outputText(await execute(hooks, { action: "status", discussion_id: started.id }))) as RecordValue,
@@ -499,6 +504,7 @@ test("manager-backed start, findings, evaluated resume after off, and owned canc
   const findings = result.canonicalFindings as RecordValue[]
   assert.equal(findings.length, 6)
   assert.equal((result.result as RecordValue).rounds, 2)
+  assert.deepEqual(result.roundBudget, { consumed: 2, limit: 3, remaining: 1, unlimited: false })
   assert.ok(findings.every((turn) => typeof turn.text === "string"))
 
   const systemOutput = { system: [] as string[] }
@@ -553,6 +559,127 @@ test("manager-backed start, findings, evaluated resume after off, and owned canc
   assert.ok(participantCalls() <= 18, "manager retry attempts remain bounded by three rounds and one retry")
 })
 
+test("finite budget status and compaction context require a final action or unresolved report", async () => {
+  const cappedRegistry: DebateRegistry = {
+    ...enabledRegistry(),
+    autoDebate: { enabled: true, maxRounds: 3, persistTranscripts: false },
+  }
+  const fake = await makePlugin(cappedRegistry, ownerA.directory, false)
+  try {
+    const started = JSON.parse(outputText(await execute(fake.hooks, { action: "start", brief }))).discussion as RecordValue
+    const id = String(started.id)
+    const awaiting = await waitFor(
+      async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }))) as RecordValue,
+      (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
+    )
+    assert.deepEqual((awaiting.discussion as RecordValue).roundBudget,
+      { consumed: 3, limit: 3, remaining: 0, unlimited: false })
+    assert.equal((awaiting.discussion as RecordValue).maxRounds, undefined)
+
+    const system = { system: [] as string[] }
+    await fake.hooks["experimental.chat.system.transform"]!({ sessionID: ownerA.sessionID, model: {} as never }, system)
+    const compacted = { context: [] as string[] }
+    await fake.hooks["experimental.session.compacting"]!({ sessionID: ownerA.sessionID }, compacted)
+    for (const text of [system.system.join("\n"), compacted.context.join("\n")]) {
+      assert.match(text, /3 of 3 total rounds used/i)
+      assert.match(text, /finite.*budget.*exhausted/i)
+      assert.match(text, /final evaluation/i)
+      assert.match(text, /act.*report-unresolved/i)
+      assert.match(text, /report-unresolved.*remaining disagreement/i)
+      assert.match(text, /same, rephrased, or subdivided/i)
+      assert.doesNotMatch(text, /unlimited total budget/i)
+    }
+
+    const evaluation = (next: "act" | "investigate" | "continue" | "report-unresolved") => ({
+      cycle: 1,
+      conclusion: "The saved findings do not resolve the disagreement.",
+      caveats: ["The evidence is incomplete."],
+      rationale: "The finite discussion budget is exhausted.",
+      next,
+    })
+    for (const next of ["investigate", "continue"] as const) {
+      await assert.rejects(
+        execute(fake.hooks, { action: "evaluate", discussion_id: id, evaluation: evaluation(next) }),
+        /round budget.*exhausted.*act.*report-unresolved/i,
+      )
+    }
+    const final = JSON.parse(outputText(await execute(fake.hooks, {
+      action: "evaluate", discussion_id: id, evaluation: evaluation("report-unresolved"),
+    }))) as RecordValue
+    assert.equal((final.discussion as RecordValue).status, "resolved")
+
+  } finally { await fake.hooks.dispose?.() }
+
+  const actionFake = await makePlugin(cappedRegistry, ownerA.directory, false)
+  try {
+    const unrelatedBrief = {
+      question: "Which team training cadence should we adopt?",
+      objective: "Choose a sustainable staff training schedule",
+      facts: ["Training can be weekly or monthly."],
+      assumptions: [],
+      constraints: ["Do not change release dates."],
+      alternatives: ["weekly", "monthly"],
+      uncertainty: "The effect on attendance is unclear.",
+      neededOutcome: "A schedule recommendation",
+    }
+    const unrelated = JSON.parse(outputText(await execute(actionFake.hooks, {
+      action: "start", brief: unrelatedBrief,
+    }))).discussion as RecordValue
+    const unrelatedID = String(unrelated.id)
+    await waitFor(
+      async () => JSON.parse(outputText(await execute(actionFake.hooks, {
+        action: "status", discussion_id: unrelatedID,
+      }))) as RecordValue,
+      (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
+    )
+    const acted = JSON.parse(outputText(await execute(actionFake.hooks, {
+      action: "evaluate", discussion_id: unrelatedID, evaluation: {
+        cycle: 1, conclusion: "Adopt monthly training.", caveats: [],
+        rationale: "The saved evidence supports this choice.", next: "act",
+      },
+    }))) as RecordValue
+    assert.equal((acted.discussion as RecordValue).status, "resolved")
+  } finally { await actionFake.hooks.dispose?.() }
+})
+
+test("unlimited status distinguishes evaluation checkpoints from a total round cap", async () => {
+  const unlimitedRegistry: DebateRegistry = {
+    ...enabledRegistry(),
+    autoDebate: { enabled: true, maxRounds: 0, persistTranscripts: false },
+  }
+  const fake = await makePlugin(unlimitedRegistry)
+  try {
+    const started = JSON.parse(outputText(await execute(fake.hooks, { action: "start", brief }))).discussion as RecordValue
+    const id = String(started.id)
+    const awaiting = await waitFor(
+      async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }))) as RecordValue,
+      (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
+    )
+    assert.deepEqual((awaiting.discussion as RecordValue).roundBudget,
+      { consumed: 2, limit: 0, remaining: null, unlimited: true })
+
+    const system = { system: [] as string[] }
+    await fake.hooks["experimental.chat.system.transform"]!({ sessionID: ownerA.sessionID, model: {} as never }, system)
+    const compacted = { context: [] as string[] }
+    await fake.hooks["experimental.session.compacting"]!({ sessionID: ownerA.sessionID }, compacted)
+    for (const text of [system.system.join("\n"), compacted.context.join("\n")]) {
+      assert.match(text, /unlimited total budget/i)
+      assert.match(text, /evaluation checkpoint after at most 3 rounds/i)
+      assert.match(text, /not a hard total or cycle cap/i)
+      assert.doesNotMatch(text, /budget.*exhausted/i)
+    }
+
+    const continued = JSON.parse(outputText(await execute(fake.hooks, {
+      action: "evaluate", discussion_id: id, evaluation: {
+        cycle: 1, conclusion: "Continue gathering evidence.", caveats: [],
+        rationale: "The next evaluation checkpoint may resolve the remaining uncertainty.",
+        next: "continue", feedback: "Recheck the remaining uncertainty.",
+      },
+    }))) as RecordValue
+    assert.equal((continued.discussion as RecordValue).status, "paused")
+  } finally { await fake.hooks.dispose?.() }
+})
+
 test("discussion-specific status retains the brief and findings after restart when transcripts are off", async () => {
   const fake = await makePlugin(enabledRegistry())
   const started = JSON.parse(outputText(await execute(fake.hooks, { action: "start", brief }))).discussion as RecordValue
@@ -595,6 +722,7 @@ test("status remains concise without an ID while targeted status retains retaine
   assert.equal(awaiting.id, id)
   assert.equal((awaiting.canonicalFindings as RecordValue[]).length, 6)
   assert.equal((awaiting.result as RecordValue).rounds, 2)
+  assert.deepEqual(awaiting.roundBudget, { consumed: 2, limit: 3, remaining: 1, unlimited: false })
   for (const key of ["brief", "results", "evaluations", "followups", "pendingTurns", "stopReasons", "failures",
     "participantDetails", "transcriptPath", "transcriptError"]) {
     assert.equal(Object.hasOwn(awaiting, key), false, `list summary must not expose ${key}`)
@@ -621,7 +749,8 @@ test("status remains concise without an ID while targeted status retains retaine
   assert.equal(targeted.id, id)
   assert.equal(targeted.status, "paused")
   assert.equal(targeted.cycle, 1)
-  assert.equal(targeted.maxRounds, 3)
+  assert.deepEqual(targeted.roundBudget, { consumed: 2, limit: 3, remaining: 1, unlimited: false })
+  assert.equal(targeted.maxRounds, undefined)
   assert.deepEqual(targeted.participants, panel)
   assert.deepEqual(targeted.persistence, { enabled: false, outcome: "disabled" })
   assert.deepEqual(targeted.brief, brief)

@@ -2,8 +2,9 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { test } from "node:test"
 import { createRuntime } from "../src/auto-debate/opencode.ts"
+import { parseConversationState } from "../src/auto-debate/validation.ts"
 import { checkpointClient } from "./fixtures/checkpoint-client.ts"
-import type { ConversationState } from "../src/auto-debate/types.ts"
+import type { ConversationState, Discussion, Owner } from "../src/auto-debate/types.ts"
 
 type RecordValue = Record<string, unknown>
 const initial: ConversationState = { version: 1, discussions: [], outbox: [] }
@@ -24,6 +25,26 @@ function rewrite(message: RecordValue, change: (payload: RecordValue) => void) {
   const payload = JSON.stringify(value)
   part.text = text.slice(0, text.indexOf("\n") + 1)
     + JSON.stringify({ payload, digest: createHash("sha256").update(payload).digest("hex") })
+}
+
+function budgetDiscussion(owner: Owner, maxRounds: number, roundsSpent?: number): Discussion {
+  return {
+    id: "86a8f47d-4d7c-4e34-90a2-c29bf67551f4",
+    owner,
+    config: { enabled: true, maxRounds, persistTranscripts: true },
+    brief: { question: "Choose safely.", objective: "Choose an approach", facts: [], assumptions: [],
+      constraints: [], alternatives: [], uncertainty: "Impact is unknown", neededOutcome: "A recommendation" },
+    panel: [],
+    status: "resolved",
+    generation: 0,
+    cycle: 2,
+    ...(roundsSpent === undefined ? {} : { roundsSpent }),
+    results: [1, 2].map((cycle) => ({ cycle, rounds: maxRounds === 0 ? 3 : Math.min(3, maxRounds), status: "complete" as const,
+      reason: "round-limit" as const, turns: [], failures: [], consensus: false })),
+    evaluations: [],
+    pendingTurns: [],
+    followups: [],
+  }
 }
 
 test("checkpoint saves never replace owner metadata or append owner history, even during outsider writes", async () => {
@@ -66,6 +87,49 @@ test("multiple checkpoints recover by logical chain after a new runtime, not his
   assert.equal(second.previous, (messages[0].info as RecordValue).id)
   messages.reverse()
   assert.deepEqual(await createRuntime(f.input, { storage: "native" }).load(f.owner), next)
+})
+
+test("checkpoint persistence accepts zero as unlimited, validates roundsSpent and reads legacy records after restart", async () => {
+  const f = checkpointClient()
+  const unlimited = budgetDiscussion(f.owner, 0, 6)
+  const state: ConversationState = { version: 1, discussions: [unlimited], outbox: [] }
+  const runtime = createRuntime(f.input, { storage: "native" })
+  await runtime.save(f.owner, state)
+
+  const restarted = createRuntime(f.input, { storage: "native" })
+  assert.deepEqual(await restarted.load(f.owner), state)
+  assert.equal((await restarted.load(f.owner))?.discussions[0].roundsSpent, 6)
+
+  for (const maxRounds of [0, 3, 4, Number.MAX_SAFE_INTEGER]) {
+    const finite = budgetDiscussion(f.owner, maxRounds)
+    delete finite.roundsSpent
+    assert.deepEqual(parseConversationState({ version: 1, discussions: [finite], outbox: [] }).discussions[0], finite)
+  }
+  for (const maxRounds of [1, 2, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const invalid = budgetDiscussion(f.owner, maxRounds)
+    assert.throws(() => parseConversationState({ version: 1, discussions: [invalid], outbox: [] }),
+      /state is invalid|unsupported/i, `maxRounds=${maxRounds}`)
+  }
+  for (const roundsSpent of [0, 1, 2]) {
+    const lowConsumption = budgetDiscussion(f.owner, 3, roundsSpent)
+    lowConsumption.cycle = 1
+    lowConsumption.results = [{ cycle: 1, rounds: roundsSpent, status: "complete", reason: "round-limit",
+      turns: [], failures: [], consensus: false }]
+    assert.deepEqual(parseConversationState({ version: 1, discussions: [lowConsumption], outbox: [] }).discussions[0], lowConsumption)
+  }
+  const legacy = budgetDiscussion(f.owner, 3)
+  delete legacy.roundsSpent
+  await runtime.save(f.owner, { version: 1, discussions: [legacy], outbox: [] })
+  const loadedLegacy = await createRuntime(f.input, { storage: "native" }).load(f.owner)
+  assert.equal(loadedLegacy?.discussions[0].roundsSpent, undefined)
+  assert.deepEqual(loadedLegacy?.discussions[0].results, legacy.results)
+
+  for (const roundsSpent of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "6", null]) {
+    const invalid = structuredClone(state) as unknown as RecordValue
+    const discussion = (invalid.discussions as RecordValue[])[0]
+    discussion.roundsSpent = roundsSpent
+    assert.throws(() => parseConversationState(invalid), /state is invalid|unsupported/i, String(roundsSpent))
+  }
 })
 
 test("concurrent saves in one retained runtime capture snapshots and serialize logical writes", async () => {

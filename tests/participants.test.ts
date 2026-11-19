@@ -119,6 +119,7 @@ test("packaged config.example.yaml preserves the shipped version 2 participant r
       persist_transcripts: true,
     },
     mini_debate: {
+      enabled: true,
       participant: "debate-glm",
       max_rounds: 5,
     },
@@ -130,7 +131,7 @@ test("packaged compatibility exports are loaded from config.example.yaml", () =>
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-openai"])
   assert.equal(DEBATE_PARTICIPANTS.length, 5)
-  assert.deepEqual(loadPackagedRegistry().miniDebate, { participant: "debate-glm", maxRounds: 5 })
+  assert.deepEqual(loadPackagedRegistry().miniDebate, { enabled: true, participant: "debate-glm", maxRounds: 5 })
 })
 
 test("description and variant are optional source fields", () => {
@@ -146,6 +147,29 @@ test("omitted auto-debate config normalises to the safe defaults", () => {
     maxRounds: 3,
     persistTranscripts: true,
   })
+})
+
+test("auto-debate enabled defaults to false and preserves explicit boolean values", () => {
+  assert.equal(parseParticipantConfig(completeConfig(), "/tmp/config.yaml").autoDebate.enabled, false)
+
+  for (const enabled of [true, false]) {
+    const parsed = parseParticipantConfig(
+      configWithAutoDebate(`  enabled: ${enabled}\n`),
+      "/tmp/config.yaml",
+    )
+
+    assert.equal(parsed.autoDebate.enabled, enabled)
+  }
+})
+
+test("auto-debate enabled rejects non-boolean values", () => {
+  for (const value of ['"true"', '"false"', "null", "1"]) {
+    assertInvalidConfig(
+      configWithAutoDebate(`  enabled: ${value}\n`),
+      "auto_debate.enabled",
+      /boolean/i,
+    )
+  }
 })
 
 test("auto-debate config preserves explicit false values", () => {
@@ -186,8 +210,8 @@ test("auto-debate set rejects unknown names including inherited property names",
     assertInvalidConfig(configWithAutoDebate(`  set: ${value}\n`), "auto_debate.set", /unknown set/i)
 })
 
-test("auto-debate max rounds accepts the minimum and larger safe values", () => {
-  for (const maxRounds of [3, 25]) {
+test("auto-debate max rounds accepts unlimited, the minimum and larger safe values", () => {
+  for (const maxRounds of [0, 3, 4, 25]) {
     const parsed = parseParticipantConfig(
       configWithAutoDebate(`  max_rounds: ${maxRounds}\n`),
       "/tmp/config.yaml",
@@ -197,8 +221,8 @@ test("auto-debate max rounds accepts the minimum and larger safe values", () => 
   }
 })
 
-test("auto-debate max rounds rejects values below three and non-safe integers", () => {
-  for (const value of ["2", "0", "-1", "'3'", "3.5", "null", "9007199254740992", "[3]"]) {
+test("auto-debate max rounds rejects positive values below three and malformed values", () => {
+  for (const value of ["1", "2", "-1", "'3'", "3.5", "null", "true", "9007199254740992", "[3]"]) {
     assertInvalidConfig(
       configWithAutoDebate(`  max_rounds: ${value}\n`),
       "auto_debate.max_rounds",
@@ -236,7 +260,7 @@ test("auto-debate config rejects minimum-round and other unknown fields precisel
 test("omitted mini-debate config normalises to the default rounds without changing automatic settings", () => {
   const parsed = parseParticipantConfig(completeConfig(), "/tmp/config.yaml")
 
-  assert.deepEqual(parsed.miniDebate, { maxRounds: 3 })
+  assert.deepEqual(parsed.miniDebate, { enabled: true, maxRounds: 3 })
   assert.deepEqual(parsed.autoDebate, {
     enabled: false,
     maxRounds: 3,
@@ -253,12 +277,12 @@ test("mini-debate config retains participant and rounds independently of automat
     participants: [unused, two, one]
 `).replace(
     "sets:\n",
-    "auto_debate:\n  set: alternate\nmini_debate:\n  participant: unused\n  max_rounds: 7\nsets:\n",
+    "auto_debate:\n  set: alternate\nmini_debate:\n  enabled: false\n  participant: unused\n  max_rounds: 7\nsets:\n",
   )
 
   const parsed = parseParticipantConfig(source, "/tmp/config.yaml")
 
-  assert.deepEqual(parsed.miniDebate, { participant: "unused", maxRounds: 7 })
+  assert.deepEqual(parsed.miniDebate, { enabled: false, participant: "unused", maxRounds: 7 })
   assert.equal(parsed.autoDebate.set, "alternate")
   assert.equal(parsed.defaultSet, "alpha")
 })
@@ -271,6 +295,29 @@ test("mini-debate max rounds accepts the configured bounds", () => {
     )
 
     assert.equal(parsed.miniDebate.maxRounds, maxRounds)
+  }
+})
+
+test("mini-debate enabled defaults to true and preserves explicit boolean values", () => {
+  assert.equal(parseParticipantConfig(completeConfig(), "/tmp/config.yaml").miniDebate.enabled, true)
+
+  for (const enabled of [true, false]) {
+    const parsed = parseParticipantConfig(
+      configWithMiniDebate(`  enabled: ${enabled}\n`),
+      "/tmp/config.yaml",
+    )
+
+    assert.equal(parsed.miniDebate.enabled, enabled)
+  }
+})
+
+test("mini-debate enabled rejects non-boolean values", () => {
+  for (const value of ['"true"', '"false"', "null", "1"]) {
+    assertInvalidConfig(
+      configWithMiniDebate(`  enabled: ${value}\n`),
+      "mini_debate.enabled",
+      /boolean/i,
+    )
   }
 })
 
@@ -318,13 +365,13 @@ test("mini-debate config normalises to a frozen registry copy", () => {
   withTempConfig(completeConfig(), (configPath) => {
     const registry = loadPackagedRegistry(configPath)
 
-    assert.deepEqual(registry.miniDebate, { maxRounds: 3 })
+    assert.deepEqual(registry.miniDebate, { enabled: true, maxRounds: 3 })
     assert.equal(Object.isFrozen(registry.miniDebate), true)
   })
   withTempConfig(configWithMiniDebate("  participant: unused\n  max_rounds: 5\n"), (configPath) => {
     const registry = loadPackagedRegistry(configPath)
 
-    assert.deepEqual(registry.miniDebate, { participant: "unused", maxRounds: 5 })
+    assert.deepEqual(registry.miniDebate, { enabled: true, participant: "unused", maxRounds: 5 })
     assert.equal(Object.isFrozen(registry.miniDebate), true)
   })
 })

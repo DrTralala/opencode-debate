@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { test } from "node:test"
 import { createManager } from "../src/auto-debate/manager.ts"
-import { DEFAULT_AUTO_DEBATE_CONFIG, parseControl } from "../src/auto-debate/state.ts"
+import { DEFAULT_AUTO_DEBATE_CONFIG, parseControl, roundBudget, roundsConsumed } from "../src/auto-debate/state.ts"
 import { checkpointTranscript } from "../src/auto-debate/transcripts.ts"
 import type { DebateRegistry } from "../src/participants.ts"
 import type {
@@ -705,26 +705,121 @@ test("continuation requires evaluation, survives automatic-off, uses original ID
   await manager.dispose()
 })
 
-test("configured maximum five is per-cycle and first resumed round uses dependent response schema", async () => {
+test("configured maximum five covers the discussion across cycles and resumed turns use the dependent schema", async () => {
   const runtime = new FakeRuntime()
   const seenSchemas: string[] = []
   const manager = createManager({ runtime, registry: registry(5), id: () => "five-rounds",
     checkpoint: async () => undefined,
     canonicalise: (raw, schema) => { seenSchemas.push(schema); return canonicalise(raw, schema) } })
   const started = await manager.start(owner, brief)
-  for (let round = 1; round <= 5; round++) {
+  for (let round = 1; round <= 2; round++) {
     const first = (round - 1) * 3
     await runtime.waitForPrompts(first + 3)
     await finishRound(runtime, [first, first + 1, first + 2], (index) => round === 1
       ? firstAnswer(`round-${round}-${index}`)
-      : answer(`round-${round}-${index}`), round === 5)
+      : answer(`round-${round}-${index}`, { stop: true }), round === 2)
   }
-  const result = (await manager.status(owner, started.id))[0].results[0]
-  assert.equal(result.rounds, 5)
+  await manager.evaluate(owner, started.id, { cycle: 1, conclusion: "Continue", caveats: [], rationale: "One follow-up is useful.", next: "continue" })
+  await manager.resume(owner, started.id, "Recheck the remaining alternative.")
+  for (let round = 1; round <= 3; round++) {
+    const first = (round + 1) * 3
+    await runtime.waitForPrompts(first + 3)
+    await finishRound(runtime, [first, first + 1, first + 2], (index) => answer(`resumed-${round}-${index}`), round === 3)
+  }
+  const results = (await manager.status(owner, started.id))[0].results
+  assert.deepEqual(results.map((result) => result.rounds), [2, 3])
+  assert.equal(roundsConsumed((await manager.status(owner, started.id))[0]), 5)
+  assert.equal(runtime.promptCalls.length, 15)
   assert.deepEqual(seenSchemas.slice(0, 3), ["round1", "round1", "round1"])
   assert.ok(seenSchemas.slice(3).every((schema) => schema === "round2"))
-  assert.equal(runtime.promptCalls.length, 15)
   await manager.dispose()
+})
+
+test("discussion-wide finite budget survives manager restart and rejects exhausted resume before reconciliation", async () => {
+  const runtime = new FakeRuntime()
+  const manager = makeManager(runtime, { maxRounds: 3, id: () => "budget-restart" })
+  const started = await manager.start(owner, brief)
+  await runtime.waitForPrompts(3)
+  await finishRound(runtime, [0, 1, 2], (index) => firstAnswer(`initial-${index}`))
+  await runtime.waitForPrompts(6)
+  await finishRound(runtime, [3, 4, 5], (index) => answer(`early-stop-${index}`, { stop: true }), true)
+  await manager.evaluate(owner, started.id, { cycle: 1, conclusion: "Continue", caveats: [], rationale: "Use one more round.", next: "continue" })
+  await manager.resume(owner, started.id, "Focus the follow-up on the unresolved point.")
+  await runtime.waitForPrompts(9)
+  await finishRound(runtime, [6, 7, 8], (index) => answer(`last-round-${index}`, { stop: true }), true)
+  await manager.evaluate(owner, started.id, { cycle: 2, conclusion: "Continue", caveats: [], rationale: "Check whether budget remains.", next: "continue" })
+  assert.equal(roundBudget((await manager.status(owner, started.id))[0]).remaining, 0)
+  await manager.dispose()
+
+  const recoveredManager = makeManager(runtime, { maxRounds: 3 })
+  try {
+    await recoveredManager.recover(owner)
+    const recovered = (await recoveredManager.status(owner, started.id))[0]
+    assert.equal(recovered.status, "paused")
+    assert.equal(roundsConsumed(recovered), 3)
+    const callsBeforeResume = runtime.calls.length
+    const promptsBeforeResume = runtime.promptCalls.length
+    await assert.rejects(recoveredManager.resume(owner, started.id, "Try to resume after the discussion budget is spent."), /round budget.*exhausted/i)
+    assert.equal(runtime.calls.length, callsBeforeResume, "exhausted resume must be rejected before participant reconciliation")
+    assert.equal(runtime.promptCalls.length, promptsBeforeResume)
+  } finally { await recoveredManager.dispose() }
+})
+
+test("durable round reservation counts a dispatched round with no returned turns after crash recovery", async () => {
+  const runtime = new FakeRuntime()
+  const manager = makeManager(runtime, { maxRounds: 3, id: () => "reserved-before-dispatch" })
+  const started = await manager.start(owner, brief)
+  await runtime.waitForPrompts(3)
+  const reservation = runtime.saveLog.find(({ state }) => state.discussions.some((discussion) =>
+    discussion.id === started.id && discussion.roundsSpent === 1))
+  const firstPromptCall = runtime.calls.findIndex((call) => call.method === "prompt")
+  assert.ok(reservation, "round reservation must be saved before dispatch")
+  assert.ok(reservation.callIndex < firstPromptCall)
+
+  const crashRuntime = new FakeRuntime()
+  crashRuntime.states.set(owner.sessionID, runtime.state(owner))
+  const recoveredManager = makeManager(crashRuntime, { maxRounds: 3 })
+  try {
+    await recoveredManager.recover(owner)
+    const recovered = (await recoveredManager.status(owner, started.id))[0]
+    assert.equal(recovered.status, "interrupted")
+    assert.equal(recovered.pendingTurns.length, 0)
+    assert.equal(recovered.results.find((result) => result.cycle === 1)?.rounds, 1)
+    assert.equal(roundsConsumed(recovered), 1)
+  } finally { await recoveredManager.dispose() }
+
+  const disposing = manager.dispose()
+  for (let index = 0; index < runtime.promptCalls.length; index++) runtime.fulfill(index, firstAnswer(`late-${index}`))
+  await disposing
+})
+
+test("zero means unlimited total rounds with three-round evaluation checkpoints", async () => {
+  const runtime = new FakeRuntime()
+  const manager = makeManager(runtime, { maxRounds: 0, id: () => "unlimited-checkpoints" })
+  const started = await manager.start(owner, brief)
+  try {
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      for (let round = 1; round <= 3; round++) {
+        const first = ((cycle - 1) * 3 + round - 1) * 3
+        await runtime.waitForPrompts(first + 3)
+        await finishRound(runtime, [first, first + 1, first + 2], (index) => cycle === 1 && round === 1
+          ? firstAnswer(`cycle-${cycle}-round-${round}-${index}`)
+          : answer(`cycle-${cycle}-round-${round}-${index}`), round === 3)
+      }
+      const current = (await manager.status(owner, started.id))[0]
+      assert.equal(current.status, "awaiting-evaluation")
+      assert.equal(current.results.find((result) => result.cycle === cycle)?.rounds, 3)
+      if (cycle < 3) {
+        await manager.evaluate(owner, started.id, { cycle, conclusion: "Continue", caveats: [], rationale: "Another checkpoint is appropriate.", next: "continue" })
+        await manager.resume(owner, started.id, `Continue from cycle ${cycle}'s evidence.`)
+      }
+    }
+    const last = (await manager.status(owner, started.id))[0]
+    assert.equal(runtime.promptCalls.length, 27)
+    assert.equal(roundsConsumed(last), 9)
+    assert.deepEqual(roundBudget(last), { limit: 0, consumed: 9, remaining: undefined, cycleLimit: 3, unlimited: true })
+    await manager.evaluate(owner, started.id, { cycle: 3, conclusion: "Resolved", caveats: [], rationale: "The evidence is sufficient.", next: "act" })
+  } finally { await manager.dispose() }
 })
 
 test("unanimous consensus is separate from stop, and disagreement continues to the round limit", async () => {
@@ -816,6 +911,16 @@ test("busy idle races and duplicate idle events retain then batch pending result
   assert.equal(runtime.deliveries[0].intent.outboxIDs.length, 2)
   assert.ok(runtime.deliveries[0].intent.text.includes(first.id))
   assert.ok(runtime.deliveries[0].intent.text.includes(second.id))
+  const payload = /<AUTO_DEBATE_RESULTS>\n([\s\S]*?)\n<\/AUTO_DEBATE_RESULTS>/u.exec(runtime.deliveries[0].intent.text)
+  assert.ok(payload, "delivery includes structured saved results")
+  const deliveredResults = JSON.parse(payload[1]) as Record<string, unknown>[]
+  assert.deepEqual(deliveredResults.map((item) => item.roundBudget), [
+    { consumed: 2, limit: 3, remaining: 1, unlimited: false },
+    { consumed: 2, limit: 3, remaining: 1, unlimited: false },
+  ])
+  const status = await manager.control(owner, { action: "status" })
+  assert.match(status, /2 of 3 total rounds used; 1 remaining/i)
+  assert.doesNotMatch(status, /cycle 1\/3/u)
   assert.ok(runtime.state(owner).outbox.every((item) => item.state === "sent"))
   assert.equal(runtime.aborted.length, 0)
   await manager.dispose()

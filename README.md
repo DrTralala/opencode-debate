@@ -111,8 +111,10 @@ auto_debate:
 |---|---|
 | `enabled` | Default for new conversations; session controls below override it. |
 | `set` | Existing set name, such as `default` or `cheap`. Omission uses the configured default. Invalid names are rejected. New in v3.1.0; manual `/debate` selection and saved panels are unchanged. |
-| `max_rounds` | Integer ≥3, per cycle. Unanimous stop votes can end a new discussion after round 2, or a follow-up after round 1. No overall cycle, time, or spending cap. |
+| `max_rounds` | Default `3`. A safe integer ≥3 caps total rounds in one discussion, including resumes. `0` removes the total cap: the main agent evaluates at least every three rounds and decides whether to continue with the same panel. Other values are rejected at load time. |
 | `persist_transcripts` | Save Markdown to `docs/debates/auto-<discussion-id>.md` (no HTML). Disabling it does not disable session or provider retention. |
+
+**Upgrading from 3.x:** A limit of `3` used to allow three more rounds after each resume. In 4.0.0 it allows three in total, even after a restart and even if all participants want to continue. For example, if a panel stops after two rounds, only one remains. Choose a larger finite number if needed; use `0` only if you intend to allow unlimited rounds. At the cap the agent must act on the findings or report unresolved disagreement, not open a replacement debate on the same, rephrased or subdivided topic. It may still start one for an unrelated decision that independently warrants debate. The numeric cap is enforced in code; judging whether topics are related is the agent’s responsibility.
 
 Conversation controls take effect immediately without rewriting YAML:
 
@@ -171,12 +173,14 @@ Add this optional block to your complete [user configuration](#configuration), t
 
 ```yaml
 mini_debate:
+  enabled: true
   participant: debate-kimi
   max_rounds: 3
 ```
 
 | Setting | Behaviour |
 |---|---|
+| `enabled` | Defaults to `true`. Set to `false` to reject `/mini-debate` before prompting or starting a participant. Command flags cannot override it. Install 4.0.0 before adding this key; older versions reject it. |
 | `participant` | Existing participant name. Omission uses the first member of the configured default set. It is independent of `auto_debate.set`. |
 | `max_rounds` | Integer from 1 to 10, default 3. Command flags override it. |
 
@@ -230,7 +234,7 @@ Only the hidden coordinator has Task access to manual debate participants. Hidde
 
 - Debate topics, participant turns, and workspace context read by participants can be sent to several third-party model providers.
 - Transcripts are stored locally under `docs/debates/` and can contain sensitive source code or repository context. Plugin consumers do not inherit this repository's ignore rules, so add `docs/debates/` to your own `.gitignore` before running debates.
-- A debate invokes three models per round and may be extended beyond its configured limit. Multi-model, multi-round debates can incur substantial provider usage and cost.
+- Manual and automatic panel debates use three participants per round. Manual debates may extend; automatic debates cannot exceed a positive `auto_debate.max_rounds`. A round limit is not a token or monetary limit. Mini-debates use one participant and need user approval to extend.
 
 ## Transcripts
 

@@ -3,6 +3,7 @@ import type { DebateParticipant } from "../participants.ts"
 export type AutoDebateConfig = Readonly<{
   enabled: boolean
   set?: string
+  /** Zero is the explicit unlimited setting; finite limits are safe integers of at least three. */
   maxRounds: number
   persistTranscripts: boolean
 }>
@@ -128,6 +129,8 @@ export type Discussion = {
     | "cancelled" | "interrupted"
   generation: number
   cycle: number
+  /** Lifetime rounds reserved before participant dispatch; absent on legacy records. */
+  roundsSpent?: number
   results: CycleResult[]
   evaluations: Evaluation[]
   pendingTurns: Turn[]

@@ -17,6 +17,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { discussionSummary } from "../src/auto-debate/audit.ts"
 import { checkpointTranscript, renderTranscript, saveTranscript } from "../src/auto-debate/transcripts.ts"
 import type { Discussion } from "../src/auto-debate/types.ts"
 
@@ -148,6 +149,106 @@ test("checkpoints append only new events and unchanged saves are idempotent", as
   } finally {
     rmSync(project, { recursive: true, force: true })
   }
+})
+
+test("unlimited transcripts label three-round checkpoints and reconcile them after reopening", async () => {
+  const project = temporaryProject()
+  try {
+    const checkpointTurn = { participant: "debate-three", cycle: 1, round: 3, text: "Third checkpoint round." }
+    const current = discussion(project, {
+      config: { enabled: true, maxRounds: 0, persistTranscripts: true },
+      roundsSpent: 3,
+      pendingTurns: [checkpointTurn],
+    })
+    const path = join(project, "docs", "debates", transcriptFilename)
+    assert.equal(await saveTranscript(current), transcriptPath)
+    const initial = readFileSync(path, "utf8")
+    assert.match(initial, /\*\*Total round budget:\*\* Unlimited \(three-round evaluation checkpoints\)/u)
+    assert.match(initial, /Third checkpoint round\./u)
+
+    const recovered = discussion(project, {
+      config: { enabled: true, maxRounds: 0, persistTranscripts: true },
+      roundsSpent: 3,
+      status: "awaiting-evaluation",
+      results: [{ cycle: 1, rounds: 3, status: "complete", reason: "round-limit",
+        turns: [checkpointTurn], failures: [], consensus: false }],
+    })
+    assert.equal(await saveTranscript(recovered), transcriptPath)
+    const appended = readFileSync(path, "utf8")
+    assert.ok(appended.startsWith(initial))
+    assert.match(appended, /\*\*Rounds completed:\*\* 3/u)
+    assert.match(appended, /Main-agent evaluation is pending\./u)
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("transcripts reject subminimum configured limits without rejecting one or two spent rounds", () => {
+  for (const maxRounds of [1, 2]) {
+    const invalid = discussion("/workspace", { config: { enabled: true, maxRounds, persistTranscripts: true } })
+    assert.throws(() => renderTranscript(invalid), /discussion fields are invalid/i, `maxRounds=${maxRounds}`)
+  }
+  for (const roundsSpent of [1, 2]) {
+    const current = discussion("/workspace", {
+      roundsSpent,
+      results: [{ cycle: 1, rounds: roundsSpent, status: "complete", reason: "round-limit",
+        turns: [firstTurn()], failures: [], consensus: false }],
+    })
+    assert.match(renderTranscript(current), /\*\*Total round budget:\*\* 3 total rounds across all cycles/u)
+  }
+})
+
+test("legacy transcript headers and v2 event frames remain readable and appendable", async () => {
+  const project = temporaryProject()
+  try {
+    const initial = discussion(project)
+    const path = join(project, "docs", "debates", transcriptFilename)
+    assert.equal(await saveTranscript(initial), transcriptPath)
+    const currentFormat = readFileSync(path, "utf8")
+    const legacyFormat = currentFormat.replace(
+      "**Total round budget:** 3 total rounds across all cycles",
+      "**Maximum rounds per cycle:** 3",
+    )
+    assert.notEqual(legacyFormat, currentFormat, "the fixture must contain the legacy header")
+    writeFileSync(path, legacyFormat, { mode: 0o600 })
+
+    const resumed = discussion(project, {
+      status: "awaiting-evaluation",
+      roundsSpent: 1,
+      results: [{ cycle: 1, rounds: 1, status: "complete", reason: "round-limit",
+        turns: [firstTurn("Finding appended after reopening legacy frames.")], failures: [], consensus: false }],
+    })
+    assert.equal(await saveTranscript(resumed), transcriptPath)
+    const reconciled = readFileSync(path, "utf8")
+    assert.ok(reconciled.startsWith(legacyFormat))
+    assert.match(reconciled, /Finding appended after reopening legacy frames\./u)
+    assert.match(reconciled, /opencode-debate-frame:v2/u)
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("audit summaries distinguish unlimited checkpoints from finite remaining rounds", () => {
+  const unlimited = discussion("/workspace", {
+    config: { enabled: true, maxRounds: 0, persistTranscripts: true },
+    roundsSpent: 6,
+  })
+  assert.deepEqual(discussionSummary(unlimited).roundBudget, {
+    limit: 0,
+    consumed: 6,
+    remaining: undefined,
+    cycleLimit: 3,
+    unlimited: true,
+  })
+
+  const finite = discussion("/workspace", { roundsSpent: 2 })
+  assert.deepEqual(discussionSummary(finite).roundBudget, {
+    limit: 3,
+    consumed: 2,
+    remaining: 1,
+    cycleLimit: 1,
+    unlimited: false,
+  })
 })
 
 test("out-of-order participant arrivals preserve verified frames across checkpoint recovery", async () => {

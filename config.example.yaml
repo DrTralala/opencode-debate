@@ -38,9 +38,11 @@ sets:
 auto_debate:
   enabled: true
   set: cheap
+  # Total rounds across resumes. Use 0 only to allow unlimited rounds.
   max_rounds: 3
   persist_transcripts: true
-# Optional mini-debate defaults. Omit participant to use the default set's first member.
+# Optional mini-debate settings. enabled defaults to true; omit participant to use the default set's first member.
 mini_debate:
+  enabled: true
   participant: debate-glm
   max_rounds: 5

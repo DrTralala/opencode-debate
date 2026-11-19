@@ -25,7 +25,7 @@ const REGISTRY: DebateRegistry = {
     alternate: ["three", "two", "one"],
   },
   continuationBySet: { default: "ask", alternate: "ask" },
-  miniDebate: { maxRounds: 3 },
+  miniDebate: { enabled: true, maxRounds: 3 },
   defaultSet: "default",
 }
 
@@ -40,7 +40,11 @@ type Hooks = MiniDebateController["hooks"]
 
 type Host = ReturnType<typeof makeHost>
 
-function makeHost(options: { beforeStart?: (sessionID: string) => void; root?: Partial<SessionRecord> } = {}) {
+function makeHost(options: {
+  beforeStart?: (sessionID: string) => void
+  root?: Partial<SessionRecord>
+  registry?: DebateRegistry
+} = {}) {
   const sessions = new Map<string, SessionRecord>()
   const root: SessionRecord = { id: "main", agent: "build", directory: "/work", ...options.root }
   sessions.set(root.id, root)
@@ -55,7 +59,7 @@ function makeHost(options: { beforeStart?: (sessionID: string) => void; root?: P
     },
   }
   const controller = createMiniDebateController(
-    REGISTRY,
+    options.registry ?? REGISTRY,
     { client: client as never, directory: "/work" },
     options.beforeStart ? { beforeStart: options.beforeStart } : {},
   )
@@ -672,6 +676,28 @@ test("a beforeStart failure registers no state", async () => {
   })
   const text = await runCommand(host.hooks, "A topic")
   assert.match(text, /denied by policy/u)
+  assert.equal(host.controller.state.sessions.has("main"), false)
+})
+
+test("a disabled mini-debate command rejects valid flags before prompting or dispatching a child", async () => {
+  let beforeStartCalled = false
+  const host = makeHost({
+    beforeStart: () => {
+      beforeStartCalled = true
+    },
+    registry: { ...REGISTRY, miniDebate: { enabled: false, maxRounds: 3 } },
+  })
+
+  const text = await runCommand(host.hooks, "--participant:one --rounds 2 A topic")
+  assert.match(text, /disabled/i)
+  assert.doesNotMatch(text, /BEGIN MINI_DEBATE_INVOCATION/u)
+  assert.equal(beforeStartCalled, false)
+  assert.equal(host.controller.state.sessions.has("main"), false)
+
+  await assert.rejects(
+    dispatch(host.hooks, taskCall(taskRequest(1, "opening", "not-started"), ALIAS_ONE)),
+    /no active mini-debate invocation/i,
+  )
   assert.equal(host.controller.state.sessions.has("main"), false)
 })
 

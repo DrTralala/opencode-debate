@@ -875,6 +875,9 @@ export function createMiniDebateController(
     "command.execute.before": async (input, output) => {
       if (input.command !== MINI_DEBATE_COMMAND) return
       try {
+        if (registry.miniDebate?.enabled === false) {
+          throw new Error("Mini-debate is disabled by configuration")
+        }
         const parsed = parseMiniDebateArguments(input.arguments, registry)
         if (!parsed.ok) throw new Error(parsed.error)
         const existing = sessions.get(input.sessionID)
