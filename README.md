@@ -9,20 +9,19 @@
 
 </div>
 
-Run structured, multi-round debates in OpenCode with three neutral participant agents backed by different language models, followed by a final synthesis.
+Ever find your agents stuck trying to implement a feature or fix a bug? Meet OpenCode Debate, where your agents can debate a chosen topic to achieve the best possible outcome.
 
 ## Requirements
 
 - OpenCode 1.17.13 or later
 - Node.js 24.15.0 or later
 - Python 3.9 or later
-- Linux with `/proc/self/fd` support for transcript persistence; other platforms fail closed
-- Access to the providers used by your selected participant set
+- Linux (other platforms have not been tested)
+- Access to models from different families (e.g. GPT, Claude and Gemini) is highly recommended
 
-## Quick start
+## Installation
 
-For project-only installation, add the npm package to `plugin` in the project's `opencode.json`:
-
+Put this in your `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -32,113 +31,94 @@ For project-only installation, add the npm package to `plugin` in the project's 
 }
 ```
 
-For installation across all projects, add the same `plugin` entry to your global OpenCode configuration at `~/.config/opencode/opencode.json`.
+For Git-based projects, you may want to add `docs/debates/` to `.gitignore` as debate transcripts are stored there.
 
-OpenCode installs and caches the npm package automatically. Do not run `npm install` in the consumer project. Restart OpenCode after changing the plugin specification.
+## Uninstallation
 
-Before use, review [Privacy and Cost](#privacy-and-cost) and add `docs/debates/` to your project's `.gitignore`. Topics and workspace context may be sent to third-party providers; each round invokes three models.
+Remove the `opencode-debate` entry from your `opencode.json`. Optionally, delete the following directories:
+
+1. `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode-debate`
+2. `${XDG_CACHE_HOME:-$HOME/.cache}/opencode/packages/opencode-debate@latest`
+
+## Quick Start
 
 Run a debate:
 
 ```text
-/debate compare two architecture options for this project
+/debate <topic>
 ```
 
-The plugin registers commands and agents automatically; consumer projects do not copy this repository's `.opencode/` files.
-
-On success, the coordinator returns a final synthesis and prints the Markdown and HTML transcript paths under `docs/debates/`. If HTML generation fails, the Markdown transcript is retained and the failure is reported.
-
-## Uninstallation
-
-Remove the `opencode-debate` entry from the `plugin` array in your project or global OpenCode configuration. Optionally, delete the user configuration file at `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml`, then restart OpenCode.
-
-## Development Checkout
-
-To run or modify the plugin from a checkout:
-
-```bash
-git clone https://github.com/DrTralala/opencode-debate.git
-cd opencode-debate
-npm ci
-opencode
-```
-
-Restart OpenCode after changing plugin or agent files.
+On success, the coordinator returns a final synthesis and prints the paths to the Markdown and HTML transcripts under `docs/debates/`. If HTML generation fails, the Markdown transcript is retained and the failure is reported.
 
 ## How It Works
 
-1. `/debate` validates the options and starts a hidden coordinator with the selected three-participant panel.
-2. Participants answer independently in round 1, then review each other's responses in their existing sessions.
-3. From round 2, unanimous consensus and stop recommendations end the debate early. Otherwise, the selected set's continuation mode governs extensions at the round limit.
-4. The coordinator returns a synthesis and saves Markdown and HTML transcripts. Participant turns remain in child sessions and transcripts.
+1. `/debate` validates the options and starts a hidden coordinator with three debate participants specified in `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode-debate/config.yaml`.
+2. Round 1: Participants respond to the topic independently.
+3. Round 2: Participants receive one another's responses. They can now specify `consensus_reached` and `recommend_stopping` to end the debate early. If the conditions are not met, the debate continues to the next round.
+4. Round 3: Participants once again receive one another's responses. By default, this is the final round. They will also specify `consensus_reached` and `recommend_stopping`.
+5. Assuming the debate stops here, the coordinator synthesises the participants' responses and saves the results as both Markdown and HTML transcripts. It also provides a summary upon completion.
 
-Responses are schema-validated before forwarding or storage; invalid responses are corrected and validation failures are recorded. Dispatch guards reject duplicate, wrong-agent, and wrong-round tasks. Formatting and persistence tools are restricted to the coordinator.
+The conditions under which debates stop can be adjusted in `config.yaml`. See the [Configuration](#configuration) section.
 
 ## Usage
 
 ```text
 /debate <topic>
 /debate --rounds 5 <topic> # 5 rounds instead of 3
-/debate --set:cheap <topic>
-/debate --rounds=5 --set:cheap <topic>
+/debate --set:cheap <topic> # uses the "cheap" set specified in config.yaml
+/mini-debate <topic> # single debate participant
+/mini-debate --participant <name> <topic> # specify which debate participant (model) to use
 ```
-
-Options are recognised only before the topic begins.
-
-| Option | Description |
-|---|---|
-| `--rounds <number>` | Maximum rounds from 1 to 10. Defaults to 3. `--rounds=<number>` is also accepted. |
-| `--set:<name>` | Configured participant set. The package includes `default` and `cheap`; omission uses the default selected by `config.yaml`. |
-| `--` | End option parsing and treat all following text as the topic. |
 
 Invalid options produce an error without starting participant subagents.
 
-## Automatic Debates
+## Mini Debates
 
-Disabled by default. When enabled, a visible main agent can consult a three-participant panel for decisions with material uncertainty. It evaluates the findings before acting or requesting another cycle; consensus is not proof of correctness.
+Run a debate with only one debate participant in the current session. The main agent stays active and debates directly with the participant. For example:
 
-Add this optional block to your complete [user configuration](#configuration), then restart OpenCode:
-
-```yaml
-auto_debate:
-  enabled: false
-  set: default
-  max_rounds: 3
-  persist_transcripts: true
+```text
+/mini-debate Are there alternative ways to fix this bug?
 ```
 
-| Setting | Behaviour |
-|---|---|
-| `enabled` | Default for new conversations; session controls below override it. |
-| `set` | Existing set name, such as `default` or `cheap`. Omission uses the configured default. Invalid names are rejected. New in v3.1.0; manual `/debate` selection and saved panels are unchanged. |
-| `max_rounds` | Default `3`. A safe integer ≥3 caps total rounds in one discussion, including resumes. `0` removes the total cap: the main agent evaluates at least every three rounds and decides whether to continue with the same panel. Other values are rejected at load time. |
-| `persist_transcripts` | Save Markdown to `docs/debates/auto-<discussion-id>.md` (no HTML). Disabling it does not disable session or provider retention. |
+This can be further configured in `config.yaml`.
 
-**Upgrading from 3.x:** A limit of `3` used to allow three more rounds after each resume. In 4.0.0 it allows three in total, even after a restart and even if all participants want to continue. For example, if a panel stops after two rounds, only one remains. Choose a larger finite number if needed; use `0` only if you intend to allow unlimited rounds. At the cap the agent must act on the findings or report unresolved disagreement, not open a replacement debate on the same, rephrased or subdivided topic. It may still start one for an unrelated decision that independently warrants debate. The numeric cap is enforced in code; judging whether topics are related is the agent’s responsibility.
+## Automatic Debates
 
-Conversation controls take effect immediately without rewriting YAML:
+> [!CAUTION]
+> This can become expensive if you do not know what you are doing. Use at your own risk.
 
-| Command | Effect |
-|---|---|
-| `/debate-auto on` | Allow new discussions; does not start one itself. |
-| `/debate-auto status` | Check current state and discussions. |
-| `/debate-auto off` | Block new discussions; existing work and evaluated continuations can proceed. |
-| `/debate-auto stop <discussion-id\|all>` | Cancel one or all discussions in this conversation; pending stops remain unconfirmed. |
-| `/debate-auto reset` | Return to the configured enablement default. |
+When enabled, the agent can automatically spawn a debate. This is done at the agent's discretion, usually when there is material uncertainty. It can request additional cycles of debate if it considers the answers inadequate.
 
-Participants cannot edit files or launch nested debates. Normal OpenCode permissions still apply; the tool's permission action patterns are `start`, `status`, `evaluate`, `resume`, and `cancel`.
+This behaviour can be overridden on a per-session basis:
 
-After restart, in-flight work is marked interrupted, not replayed. Resuming requires verified original sessions, a recorded evaluation, and focused feedback. If a background notification is missing, check status rather than assuming completion.
+`/debate-auto on` -- Allow new automatic debates without starting one.
+
+`/debate-auto off` -- Block new discussions; existing work and evaluated continuations can proceed.
+
+`/debate-auto status` -- Check the current state and discussions.
+
+`/debate-auto stop <discussion-id|all>` -- Cancel one or all discussions in this conversation, including pending ones.
+
+`/debate-auto reset` -- Return to the configured default.
+
+Participants cannot edit files or launch nested debates. Normal OpenCode permissions still apply. By default, participants have access to the following tools:
+- `start`
+- `status`
+- `evaluate`
+- `resume`
+- `cancel`
 
 ### Automatic-debate storage
 
-New automatic-debate state on Linux is stored under `<state>/opencode-debate/auto-debate/v2/`. Directories are private by `0700` and files by `0600`; there is no checkpoint child for new Linux owners. The state is host-bound.
+#### Storage location and platform support
 
-Existing native checkpoints remain until explicitly migrated. Native Windows and other platforms remain on the native backend; private storage is Linux-only in v3.3.1. If a native checkpoint child carries a Linux migration marker, non-Linux startup fails closed without needing a private path, rather than resurrecting the old native source. Restore both the native source and the matching Linux plugin state on the original host.
+Starting with v3.3.1, new automatic-debate state on Linux is stored in `<state>/opencode-debate/auto-debate/v2/`.
 
-Storage commands are user-only and do not resume a debate:
+#### Storage management commands
 
-```text
+The following commands may only be invoked by the user and do not resume an automatic debate:
+
+```
 /debate-auto storage status
 /debate-auto storage migrate
 /debate-auto storage migrate <token> --writer-handover-confirmed
@@ -146,64 +126,61 @@ Storage commands are user-only and do not resume a debate:
 /debate-auto storage delete-source <native-store-id> <token>
 ```
 
-A prepared or incomplete migration, and a retiring source deletion, are resumed with the same token and exact ID. Ordinary loads fail closed while either state is incomplete. The migration flag means the user has stopped the old writer and started one replacement writer; it does not resume a debate.
+A prepared or incomplete migration, or an incomplete deletion of a retiring native source, must be resumed using the original token and, where applicable, the exact native store ID.
 
-Audit details are available only with a specific `discussion_id`, including after restart and when transcripts are disabled. Compaction occurs only after every discussion is terminal and all runtime and delivery evidence is settled. Confirmed parent deletion removes only a safe, drained private store; unresolved containment or receipt evidence is retained and reported.
+Normal storage operations are blocked until the incomplete operation is resolved.
 
-Backup and resume require both the native sessions and plugin state. A partial restore fails closed when the boundary, source or provenance is present but mismatched. Total removal of both private state and the outside-revision migration boundary is indistinguishable from a never-migrated owner and is not an anti-rollback guarantee. Within one runtime, an observed suffix or high-water loss rejects; hashes alone cannot detect a whole suffix deleted before a restart.
+The `--writer-handover-confirmed` flag confirms that the user has stopped the previous writer and started exactly one replacement writer. It does not resume the debate itself.
 
-Storage is not encrypted: same-user processes and administrators can read the files. Ordinary deletion or compaction does not claim secure erasure of disk blocks, filesystem snapshots or backups. Process-kill tests are not power-loss proof; durability claims are limited to synced local Linux filesystem behaviour.
+#### Auditing, compaction and deletion
+
+Audit information can only be retrieved by specifying a `discussion_id`. This information remains available after a restart, even when transcripts are disabled.
+
+Storage compaction occurs only when:
+
+- All discussions have reached a terminal state.
+- All runtime and delivery evidence has been settled.
+
+Confirmed parent deletion removes the private store only when it is safe to do so and all outstanding activity has been drained. Unresolved containment or receipt evidence is retained and reported rather than deleted.
+
+#### Backup, restoration and rollback protection
+
+Successful backup, restoration and debate resumption require both:
+
+- The native sessions.
+- The corresponding plugin state.
+
+Partial restorations are rejected when the migration boundary, native source or provenance information is present but inconsistent.
+
+If both the private state and the migration boundary maintained outside the revision history are removed entirely, the system cannot distinguish a previously migrated owner from one that has never been migrated. Consequently, this mechanism does not provide complete anti-rollback protection.
+
+Within a single runtime, detected loss of a revision suffix or high-water mark causes the state to be rejected. However, hashes alone cannot detect the removal of an entire revision suffix before a restart.
+
+#### Security and durability limitations
+
+Private storage is access-restricted but **not encrypted**. Processes running under the same user account and administrators can still read the stored files.
+
+Ordinary deletion and compaction do not guarantee secure erasure of:
+
+- Physical disk blocks.
+- Filesystem snapshots.
+- Existing backups.
+
+Process-kill testing does not establish resilience against sudden power loss. Storage durability guarantees are limited to synchronised operations on local Linux filesystems.
 
 ### Viewing participant sessions
 
-Use **Ctrl+X, then Down** to enter a child, **Left / Right** or **Prev / Next** to cycle siblings, and **Up** or **Parent** to return. These are the [OpenCode 1.19.0 defaults](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/tui/src/config/keybind.ts); custom bindings may differ. Cycling includes other subagents; existing native checkpoint sessions may also appear. The `auto_debate` tool entry itself does not open a participant session.
-
-## Mini Debates
-
-Run a bounded debate with one neutral participant in the current session. The main agent stays active and debates directly; the plugin does not switch to the hidden three-participant coordinator.
-
-```text
-/mini-debate <topic>
-/mini-debate --participant:debate-openai --rounds 5 <topic>
-```
-
-A topic is mandatory. `--participant:<name>` selects an existing participant and `--rounds <number>` sets a budget from 1 to 10; both override the configuration below.
-
-Add this optional block to your complete [user configuration](#configuration), then restart OpenCode:
-
-```yaml
-mini_debate:
-  enabled: true
-  participant: debate-kimi
-  max_rounds: 3
-```
-
-| Setting | Behaviour |
-|---|---|
-| `enabled` | Defaults to `true`. Set to `false` to reject `/mini-debate` before prompting or starting a participant. Command flags cannot override it. Install 4.0.0 before adding this key; older versions reject it. |
-| `participant` | Existing participant name. Omission uses the first member of the configured default set. It is independent of `auto_debate.set`. |
-| `max_rounds` | Integer from 1 to 10, default 3. Command flags override it. |
-
-Each completed participant response counts as one round. From round 2, the exchange stops early only when both the main agent and the participant report `consensus_reached` and `recommend_stopping` as `true`. At the reached round limit, at least one continuing recommendation opens a native question with finite extension choices; another round runs only after the user approves that question, and the participant resumes in the same child session. A one-round budget ends at its limit without claiming early consensus.
-
-Each invocation uses one native `task` child session. The task entry stays clickable, and the child is reachable with **Ctrl+X, then Down**; mini-debate writes no separate transcript files. Native task permissions still apply: an explicit denial for a participant name is mirrored to its mini alias, while an explicit alias rule is preserved. Ordinary agents and users keep their usual ask/deny behaviour.
-
-## Participant Sets
-
-| Set | Participant 1 | Participant 2 | Participant 3 |
-|---|---|---|---|
-| `default` | `debate-kimi` (Kimi K3, `max`) | `debate-anthropic` (Claude Opus 5, `high`) | `debate-openai` (GPT-5.6 Sol, `xhigh`) |
-| `cheap` | `debate-glm` (GLM-5.2, `max`) | `debate-qwen` (Qwen 3.7 Max, `max`) | `debate-kimi` (Kimi K3, `max`) |
+As debate participants are essentially subagents, you can review their sessions using **Ctrl+X** in the OpenCode TUI. Cycle between the different debate participants to see their reasoning.
 
 ## Configuration
 
 Edit the user configuration at:
 
 ```text
-${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml
+${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode-debate/config.yaml
 ```
 
-If missing, the plugin atomically creates it as an exact copy of the packaged [`config.example.yaml`](config.example.yaml). Existing files are never merged or rewritten, including on upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
+If the file is missing, the plugin atomically creates it as an exact copy of the packaged [`config.example.yaml`](config.example.yaml). Existing files are never merged or rewritten, even during upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
 
 Minimal example:
 
@@ -219,22 +196,25 @@ participants:
 sets:
   primary:
     default: yes
+    continuation: ask
     participants: [alpha, beta, gamma]
+auto_debate:
+  enabled: true
+  set: primary
+  max_rounds: 0
+  persist_transcripts: true
+mini_debate:
+  enabled: true
+  participant: alpha
+  max_rounds: 5
 ```
 
-- **Participants:** require a non-empty `model`; `description` and `variant` are optional non-empty strings. Provider availability and variants may change independently.
-- **Sets:** exactly three distinct declared participants. Mark at most one with `default: yes`; otherwise the first set in YAML source order is used. No literal `default` name is required.
-- **Manual continuation:** `continuation: ask` (default) asks about extending when participants recommend it; `discretion` lets the coordinator ask, add one round, or synthesise. Questions offer 1 or 3 more rounds, stopping, or a custom count. Extensions have no hard cap.
-- **Validation:** duplicate keys, unknown fields or references, and malformed entries stop initialisation with a file/field error; there is no silent fallback.
-- **Reload:** quit and restart OpenCode after edits. Maintainers changing participant definitions also run `node scripts/gen-participants.ts`.
+- `continuation` can be either `ask` or `discretion`, with the latter allowing the model to decide.
+- Values of `1` or `2` are invalid for `max_rounds`. A value of `0` means unlimited rounds.
 
-Only the hidden coordinator has Task access to manual debate participants. Hidden agents are not a security boundary: users can still invoke an exact participant name manually with `@name`.
+## Privacy Concerns
 
-## Privacy and Cost
-
-- Debate topics, participant turns, and workspace context read by participants can be sent to several third-party model providers.
-- Transcripts are stored locally under `docs/debates/` and can contain sensitive source code or repository context. Plugin consumers do not inherit this repository's ignore rules, so add `docs/debates/` to your own `.gitignore` before running debates.
-- Manual and automatic panel debates use three participants per round. Manual debates may extend; automatic debates cannot exceed a positive `auto_debate.max_rounds`. A round limit is not a token or monetary limit. Mini-debates use one participant and need user approval to extend.
+Transcripts are stored locally under `docs/debates/`. They can contain sensitive source code or repository context. Please exercise caution when sharing these files or pushing them to remote Git repositories hosted on platforms such as GitHub. It is highly recommended that you add `docs/debates/` to your own `.gitignore`.
 
 ## Transcripts
 
@@ -243,30 +223,9 @@ Each completed manual debate writes:
 - `docs/debates/YYYY-MM-DD-<slug>.md`
 - `docs/debates/YYYY-MM-DD-<slug>.html`
 
-Markdown is canonical; HTML is generated from that same file with sanitised content. Publication is atomic, avoids overwriting existing transcripts, and fails closed on unsafe paths. If HTML generation fails, Markdown is retained. Regenerate HTML rather than editing it directly.
+Markdown is canonical; HTML is generated from that same file with sanitised content. Publication is atomic and does not overwrite existing transcripts. It fails closed when it encounters unsafe paths. If HTML generation fails, the Markdown transcript is retained. Regenerate the HTML rather than editing it directly.
 
-Automatic debates save Markdown only, under `docs/debates/auto-<discussion-id>.md`. Records contain submitted briefs, responses, evaluations, and outcomes—not private internal reasoning.
-
-## Verification
-
-```bash
-sh scripts/verify.sh
-```
-
-This runs repository contract checks, generated-agent and prompt drift detection, Python response-formatter and HTML-generator tests, Node.js behavioural tests, warning checks, and TypeScript typechecking. The same script runs in GitHub Actions for every push and pull request.
-
-## Project Structure
-
-| Path | Purpose |
-|---|---|
-| `config.example.yaml` | Packaged template for the user's `config.yaml` |
-| `index.ts` | Plugin entry point and agent registration |
-| `src/` | Configuration, manual debate, dispatch guards, and persistence |
-| `src/auto-debate/` | Automatic discussion lifecycle and native-session integration |
-| `.opencode/` | Project-local commands, coordinator, and generated participant agents |
-| `scripts/` | Agent generation, response validation, transcript publishing, and verification |
-| `tests/` | Behavioural and packaging regression tests |
-| `.github/workflows/` | CI verification and release-triggered npm publishing through OIDC |
+Automatic debates save only Markdown transcripts as `docs/debates/auto-<discussion-id>.md`.
 
 ## License
 
