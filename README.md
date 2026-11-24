@@ -160,8 +160,6 @@ ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode-debate/config.yaml
 
 If the file is missing, the plugin atomically creates it as an exact copy of the packaged [`config.example.yaml`](config.example.yaml). Existing files are never merged or rewritten, even during upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
 
-The packaged template's former `cheap` set is now named `alt`, and `auto_debate.set` selects `alt`. Existing user files keep their current set and model values; change them manually if you want the new defaults. Restart OpenCode after editing the file.
-
 The packaged participant models are:
 
 | Participant | Model | Variant |
