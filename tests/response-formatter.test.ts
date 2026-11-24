@@ -161,7 +161,7 @@ test("project-local plugin bridge satisfies the OpenCode v1.17.13 file-plugin lo
     "const config = {}",
     "for (const candidate of hooks) await candidate.config?.(config)",
     "if (config.command?.['mini-debate']?.template !== '$ARGUMENTS') process.exit(5)",
-    "if (config.agent?.['opencode-debate-mini-debate-kimi']?.model !== 'commandcode/moonshotai/Kimi-K3') process.exit(6)",
+    "if (config.agent?.['opencode-debate-mini-debate-kimi']?.model !== 'commandcode/moonshotai/Kimi-K3.1-Pro') process.exit(6)",
     "const output = { parts: [{ type: 'text', text: '' }] }",
     "for (const candidate of hooks) await candidate['command.execute.before']?.({ command: 'mini-debate', sessionID: 'bridge-session', arguments: '--rounds 1 bridge topic' }, output)",
     "if (!String(output.parts[0]?.text).includes('BEGIN MINI_DEBATE_INVOCATION')) process.exit(7)",

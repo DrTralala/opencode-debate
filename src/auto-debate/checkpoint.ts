@@ -52,9 +52,6 @@ export interface NativeCheckpointStore {
   save(owner: Owner, snapshot: CheckpointSnapshot, context: { agent: string; model: Model }, invocation?: CurrentInvocation): Promise<void>
   probe(owner: Owner): Promise<{ storeID: string; migration?: NativeMigrationMarker } | undefined>
   inspect(owner: Owner, invocation?: CurrentInvocation): Promise<NativeCheckpointHead | undefined>
-  inspectExact(owner: Owner, storeID: string): Promise<NativeCheckpointHead | undefined>
-  markMigrated(owner: Owner, marker: NativeMigrationMarker, expected: LegacySource): Promise<void>
-  delete(owner: Owner, expected: LegacySource): Promise<void>
 }
 
 function object(value: unknown): value is RecordValue { return value !== null && typeof value === "object" && !Array.isArray(value) }
@@ -67,18 +64,6 @@ function data(value: unknown, operation: string): unknown {
 }
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex") }
 function idPrefix(store: Store): string { return `msg_adcp_${store.binding.nonce}_` }
-
-function sameSource(left: LegacySource, right: LegacySource): boolean {
-  return left.storeID === right.storeID && left.revision === right.revision
-    && left.head === right.head && left.digest === right.digest
-}
-
-function notFound(value: unknown): boolean {
-  if (!object(value)) return false
-  if (value.response instanceof Response) return value.response.status === 404
-  if (value.status === 404 || value.statusCode === 404) return true
-  return object(value.response) && (value.response.status === 404 || value.response.statusCode === 404)
-}
 
 function storageBinding(binding: Binding): StorageBinding {
   return { kind: "opencode-debate-storage", version: 1, project: binding.project,
@@ -282,6 +267,9 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
     const known = stores.get(owner.sessionID)
     const located = await locate(owner)
     if (located.store) {
+      if (migrationMarker(located.child as RecordValue, owner, input.project.id)) {
+        fail("native store carries a prior migration marker; refusing to resume its source")
+      }
       stores.set(owner.sessionID, located.store)
       return { store: located.store, created: false }
     }
@@ -372,23 +360,6 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
     return { ...head, legacyOutboxIDs: [...legacyOutboxIDs] }
   }
 
-  async function directChild(owner: Owner, storeID: string): Promise<RecordValue | undefined> {
-    let response: unknown
-    try {
-      response = await input.client.session.get({ path: { id: storeID }, query: { directory: input.directory } })
-    } catch (error) {
-      if (notFound(error)) return undefined
-      fail("native source lookup failed")
-    }
-    if (notFound(response)) return undefined
-    if (!object(response) || response.error !== undefined && response.error !== null) {
-      fail("native source lookup failed")
-    }
-    if (response.data === undefined || response.data === null) fail("native source lookup returned no data")
-    if (!object(response.data)) fail("native source lookup is invalid")
-    return response.data
-  }
-
   return {
     probe: async (owner: Owner) => {
       const located = await locate(owner)
@@ -414,114 +385,6 @@ export function createCheckpointStore(input: PluginInput, parseState: (value: un
         ...(marker === undefined ? {} : { migration: marker }),
       }
     },
-    inspectExact: async (owner: Owner, storeID: string): Promise<NativeCheckpointHead | undefined> => {
-      if (typeof storeID !== "string" || storeID.length === 0) fail("store identity is invalid")
-      const direct = await directChild(owner, storeID)
-      if (!direct) return undefined
-      const store = validateSession(direct, owner, stores.get(owner.sessionID))
-      if (store.sessionID !== storeID) fail("store identity changed")
-      const head = await history(store)
-      if (!head) fail("state is missing")
-      const marker = migrationMarker(direct, owner, input.project.id)
-      return {
-        storeID: store.sessionID,
-        revision: head.revision,
-        head: head.messageID,
-        digest: head.digest,
-        snapshot: structuredClone({ state: head.state, runtimeProof: head.runtimeProof, legacyOutboxIDs: head.legacyOutboxIDs }),
-        ...(marker === undefined ? {} : { migration: marker }),
-      }
-    },
-
-    markMigrated: async (owner: Owner, marker: NativeMigrationMarker, expected: LegacySource): Promise<void> => {
-      if (!legacySource(expected)) fail("expected migration source is invalid")
-      if (!object(marker) || marker.kind !== "opencode-debate-migrated" || marker.version !== 1
-        || marker.privateOwnerKey !== privateOwnerKey(input.project.id, owner)
-        || !legacySource(marker.source) || !sameSource(marker.source, expected)
-        || !object(marker.private) || !exactKeys(marker.private, ["revision", "digest"])
-        || marker.private.revision !== 1 || typeof marker.private.digest !== "string"
-        || !DIGEST.test(marker.private.digest) || typeof marker.token !== "string" || !DIGEST.test(marker.token)) {
-        fail("native migration marker is invalid")
-      }
-      const located = await locate(owner)
-      if (!located.store || !located.child) fail("store is missing; cannot record migration evidence")
-      const head = await history(located.store)
-      if (!head) fail("state is missing")
-      if (head.revision !== expected.revision || head.messageID !== expected.head || head.digest !== expected.digest
-        || located.store.sessionID !== expected.storeID) {
-        fail("native source changed before the migration marker was written")
-      }
-      const existing = migrationMarker(located.child, owner, input.project.id)
-      if (existing) {
-        if (JSON.stringify(existing) !== JSON.stringify(marker)) fail("native migration marker conflicts with the requested evidence")
-        return
-      }
-      const beforeMetadata = object(located.child.metadata) ? located.child.metadata : {}
-      const metadata: RecordValue = { ...beforeMetadata, [MIGRATION_KEY]: marker }
-      // The compatibility-floor SDK typings expose only title updates; native
-      // OpenCode preserves the metadata body, and the fixture verifies that shape.
-      const updateSession = input.client.session.update as unknown as (request: {
-        path: { id: string }
-        query: { directory: string }
-        body: { metadata: RecordValue }
-      }) => Promise<unknown>
-      const updated = data(await updateSession({
-        path: { id: located.store.sessionID },
-        query: { directory: input.directory },
-        body: { metadata },
-      }), "migration marker update")
-      if (!object(updated) || updated.id !== located.store.sessionID) fail("migration marker update returned a different session")
-      const readBack = data(await input.client.session.get({
-        path: { id: located.store.sessionID },
-        query: { directory: input.directory },
-      }), "migration marker read-back")
-      if (!object(readBack) || readBack.id !== located.store.sessionID) fail("migration marker read-back is invalid")
-      const readMarker = migrationMarker(readBack, owner, input.project.id)
-      if (!readMarker || JSON.stringify(readMarker) !== JSON.stringify(marker)) fail("migration marker did not verify")
-      const afterMetadata = object(readBack.metadata) ? readBack.metadata : {}
-      for (const key of Object.keys(beforeMetadata)) {
-        if (key === MIGRATION_KEY) continue
-        if (!Object.hasOwn(afterMetadata, key)
-          || JSON.stringify(afterMetadata[key]) !== JSON.stringify(beforeMetadata[key])) {
-          fail("migration marker write changed unrelated checkpoint metadata")
-        }
-      }
-    },
-
-    delete: async (owner: Owner, expected: LegacySource): Promise<void> => {
-      if (!legacySource(expected)) fail("expected deletion source is invalid")
-      const direct = await directChild(owner, expected.storeID)
-      if (!direct) return // A direct definitive 404 is the only accepted absence proof.
-      const store = validateSession(direct, owner, stores.get(owner.sessionID))
-      if (store.sessionID !== expected.storeID) fail("native store identity changed before deletion")
-      const marker = migrationMarker(direct, owner, input.project.id)
-      if (!marker || !sameSource(marker.source, expected)) {
-        fail("native migration marker does not match the source deletion intent")
-      }
-      const head = await history(store)
-      if (!head) fail("state is missing")
-      if (head.revision !== expected.revision || head.messageID !== expected.head || head.digest !== expected.digest) {
-        fail("native source changed before deletion")
-      }
-      const located = await locate(owner)
-      if (!located.store || located.store.sessionID !== expected.storeID) {
-        fail("native store discovery changed before deletion")
-      }
-      let response: unknown
-      try {
-        response = await input.client.session.delete({
-          path: { id: expected.storeID },
-          query: { directory: input.directory },
-        })
-      } catch {
-        fail("native source deletion failed or its outcome is unconfirmed")
-      }
-      const deleted = data(response, "source deletion")
-      if (deleted !== true) fail("native source deletion was not acknowledged")
-      const after = await directChild(owner, expected.storeID)
-      if (after) fail("native source deletion was not confirmed by a definitive not-found")
-    },
-
     load: async (owner: Owner, invocation?: CurrentInvocation): Promise<CheckpointSnapshot | undefined> => {
       let store: Store | undefined
       try {

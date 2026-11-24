@@ -2,8 +2,7 @@
 description: Neutral debate participant from Alibaba
 mode: subagent
 hidden: true
-model: commandcode/Qwen/Qwen3.8-Max-0902
-variant: xhigh
+model: commandcode/Qwen/Qwen3.8-Max-Prime
 permission:
   "*": "deny"
   read:

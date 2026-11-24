@@ -1393,7 +1393,7 @@ test("manager checkpoints transcript paths into status and saved state through e
   const transcriptOwner = { ...owner, directory: project }
   const runtime = new FakeRuntime()
   const discussionID = "b2ac59c3-78a1-46a1-8c1b-12a16f5e0001"
-  const transcriptPath = `docs/debates/auto-${discussionID}.md`
+  const transcriptPath = `docs/debates/auto-${new Date().toISOString().slice(0, 10)}-what-should-be-done.md`
   let manager: ReturnType<typeof createManager> | undefined
   try {
     manager = makeTranscriptManager(runtime, discussionID)
@@ -1474,7 +1474,7 @@ test("manager clears a saved transcript link when its destination cannot be re-v
   const project = mkdtempSync(join(tmpdir(), "automatic-transcript-manager-replaced-"))
   const transcriptOwner = { ...owner, directory: project }
   const discussionID = "8b61a83f-5102-4bb8-a0d4-cd6ca19c4d37"
-  const transcriptPath = `docs/debates/auto-${discussionID}.md`
+  const transcriptPath = `docs/debates/auto-${new Date().toISOString().slice(0, 10)}-what-should-be-done.md`
   let manager: ReturnType<typeof createManager> | undefined
   try {
     const destination = join(project, transcriptPath)

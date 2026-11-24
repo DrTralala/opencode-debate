@@ -4,8 +4,6 @@ import { chmod, lstat, mkdir, open, readdir, rename, unlink } from "node:fs/prom
 import { join, resolve } from "node:path"
 import type {
   CheckpointSnapshot,
-  LegacySource,
-  MigrationBoundary,
   Owner,
   RuntimeJournal,
   StorageBinding,
@@ -24,33 +22,24 @@ export type PrivateHead = {
   revision: number
   digest: string
   snapshot: CheckpointSnapshot
-  legacy?: LegacySource
   compaction?: { throughRevision: number; throughDigest: string }
 }
 
 export interface PrivateStore {
   readonly directory: string
   load(): Promise<PrivateHead | undefined>
-  append(expected: { revision: number; digest: string | null }, snapshot: CheckpointSnapshot, legacy?: LegacySource): Promise<PrivateHead>
+  append(expected: { revision: number; digest: string | null }, snapshot: CheckpointSnapshot): Promise<PrivateHead>
   compact(expected: { revision: number; digest: string }, snapshot: CheckpointSnapshot): Promise<PrivateHead>
   close(): Promise<void>
 }
 
 type Hooks = { boundary?: (point: StoreBoundary) => Promise<void> }
-type GenesisRecovery = {
-  revision: 1
-  digest: string
-  legacy: LegacySource
-  snapshot: CheckpointSnapshot
-}
-type Options = { stateRoot: string; project: string; owner: Owner; hooks?: Hooks; recovery?: GenesisRecovery }
-type RecoveryPlan = RecordPlan & { legacy: LegacySource }
+type Options = { stateRoot: string; project: string; owner: Owner; hooks?: Hooks }
 type ParsedRecord = {
   revision: number
   digest: string
   previous: string | null
   compaction?: { throughRevision: number; throughDigest: string }
-  legacy?: LegacySource
   snapshot: CheckpointSnapshot
 }
 type StatLike = {
@@ -66,7 +55,7 @@ type StatLike = {
 
 const KIND = "opencode-debate-private-checkpoint"
 const VERSION = 1
-const ROOT_COMPONENTS = ["opencode-debate", "auto-debate", "v2"] as const
+const ROOT_COMPONENTS = ["opencode-debate"] as const
 const REVISION_WIDTH = 16
 const FINAL_PATTERN = /^(\d{16})\.json$/
 const PENDING_PATTERN = /^\.pending-(\d{16})-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -108,34 +97,6 @@ function hasExactKeys(value: Record<string, unknown>, required: readonly string[
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
-}
-
-function sameLegacy(left: LegacySource | undefined, right: LegacySource | undefined): boolean {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
-}
-
-function copyLegacy(value: LegacySource): LegacySource {
-  return { storeID: value.storeID, revision: value.revision, head: value.head, digest: value.digest }
-}
-
-function validateLegacy(value: unknown): LegacySource {
-  if (!isPlainObject(value) || !hasExactKeys(value, ["storeID", "revision", "head", "digest"])) {
-    throw new Error("Automatic-debate checkpoint legacy source is invalid")
-  }
-  if (!nonEmptyString(value.storeID) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1
-    || !nonEmptyString(value.head) || typeof value.digest !== "string" || !DIGEST_PATTERN.test(value.digest)) {
-    throw new Error("Automatic-debate checkpoint legacy source is invalid")
-  }
-  return { storeID: value.storeID, revision: value.revision as number, head: value.head, digest: value.digest }
-}
-
-function parseLegacy(value: unknown, operation: string, revision: number): LegacySource | undefined {
-  if (value === null) return undefined
-  try {
-    return validateLegacy(value)
-  } catch {
-    throw storeError(operation, revision, "legacy source is invalid")
-  }
 }
 
 function parseCompaction(value: unknown, operation: string, revision: number): ParsedRecord["compaction"] {
@@ -248,7 +209,6 @@ function recordPlan(
   revision: number,
   previous: string | null,
   snapshot: CheckpointSnapshot,
-  legacy: LegacySource | undefined,
   compaction: { throughRevision: number; throughDigest: string } | undefined,
 ): RecordPlan {
   const captured = cloneCheckpointSnapshot(snapshot, binding)
@@ -259,41 +219,11 @@ function recordPlan(
     revision,
     previous,
     compaction: compaction ?? null,
-    legacy: legacy ?? null,
     state: captured.state,
     ...(captured.runtimeProof === undefined ? {} : { runtimeProof: captured.runtimeProof }),
     ...(captured.legacyOutboxIDs === undefined ? {} : { legacyOutboxIDs: captured.legacyOutboxIDs }),
   })
   return { snapshot: captured, payload, digest: sha256(payload) }
-}
-
-/**
- * Build the exact revision record a private append would publish. Migration uses
- * this before writing its native marker and prepared boundary, so the durable
- * evidence can bind the planned digest before any private file exists.
- */
-export function planPrivateRevision(options: {
-  stateRoot: string
-  project: string
-  owner: Owner
-  revision: number
-  previous: string | null
-  snapshot: CheckpointSnapshot
-  legacy?: LegacySource
-  compaction?: { throughRevision: number; throughDigest: string }
-}): RecordPlan {
-  if (!Number.isSafeInteger(options.revision) || options.revision < 1) {
-    throw new Error("Automatic-debate private revision plan is invalid")
-  }
-  const legacy = options.legacy === undefined ? undefined : copyLegacy(validateLegacy(options.legacy))
-  return recordPlan(
-    privateBinding(options.stateRoot, options.project, options.owner),
-    options.revision,
-    options.previous,
-    options.snapshot,
-    legacy,
-    options.compaction,
-  )
 }
 
 async function readOwnerEntry(path: string, operation: string, revision: number): Promise<string> {
@@ -336,7 +266,6 @@ class FileStore implements PrivateStore {
   private readonly binding: StorageBinding
   private readonly stateRoot: string
   private readonly hooks?: Hooks
-  private readonly recovery?: RecoveryPlan
   readonly directory: string
   private tail = Promise.resolve()
   private closed = false
@@ -344,12 +273,11 @@ class FileStore implements PrivateStore {
   private nextOrder = 0
   private highWater: { revision: number; digest: string } | undefined
 
-  constructor(binding: StorageBinding, stateRoot: string, directory: string, hooks?: Hooks, recovery?: RecoveryPlan) {
+  constructor(binding: StorageBinding, stateRoot: string, directory: string, hooks?: Hooks) {
     this.binding = binding
     this.stateRoot = stateRoot
     this.directory = directory
     this.hooks = hooks
-    this.recovery = recovery
   }
 
   load(): Promise<PrivateHead | undefined> {
@@ -373,18 +301,15 @@ class FileStore implements PrivateStore {
     return result
   }
 
-  append(expected: { revision: number; digest: string | null }, snapshot: CheckpointSnapshot,
-    legacy?: LegacySource): Promise<PrivateHead> {
+  append(expected: { revision: number; digest: string | null }, snapshot: CheckpointSnapshot): Promise<PrivateHead> {
     if (this.closed) return Promise.reject(storeError("append", expected.revision, "closed"))
     if (this.failedOrder !== null) return Promise.reject(storeError("append", expected.revision, "failed"))
 
     const order = ++this.nextOrder
     const expectedCopy = { revision: expected.revision, digest: expected.digest }
     let captured: CheckpointSnapshot
-    let legacyCopy: LegacySource | undefined
     try {
       validateExpected(expectedCopy, "append")
-      legacyCopy = legacy === undefined ? undefined : copyLegacy(validateLegacy(legacy))
       captured = cloneCheckpointSnapshot(snapshot, this.binding)
     } catch {
       this.poisonOrder(order)
@@ -396,7 +321,7 @@ class FileStore implements PrivateStore {
         throw storeError("append", expectedCopy.revision, "failed")
       }
       try {
-        return await this.appendLocked(expectedCopy, captured, legacyCopy)
+        return await this.appendLocked(expectedCopy, captured)
       } catch (error) {
         this.poisonOrder(order)
         throw error
@@ -446,8 +371,7 @@ class FileStore implements PrivateStore {
     if (this.failedOrder === null || order < this.failedOrder) this.failedOrder = order
   }
 
-  private async appendLocked(expected: { revision: number; digest: string | null }, snapshot: CheckpointSnapshot,
-    legacy?: LegacySource): Promise<PrivateHead> {
+  private async appendLocked(expected: { revision: number; digest: string | null }, snapshot: CheckpointSnapshot): Promise<PrivateHead> {
     const records = await this.readRecords("append")
     const head = this.verifyRecords(records, "append")
     this.assertHighWater(head, records, "append")
@@ -455,31 +379,10 @@ class FileStore implements PrivateStore {
       throw storeError("append", expected.revision, "expected revision does not match the committed head")
     }
 
-    let effectiveLegacy: LegacySource | undefined
     if (head) {
-      if (head.legacy) {
-        if (legacy && !sameLegacy(head.legacy, legacy)) {
-          throw storeError("append", expected.revision, "legacy source changed")
-        }
-        effectiveLegacy = head.legacy
-      } else if (legacy) {
-        throw storeError("append", expected.revision, "legacy source cannot be introduced after genesis")
-      }
       assertRuntimeProofPrefix(head.snapshot.runtimeProof, snapshot.runtimeProof)
-    } else {
-      effectiveLegacy = legacy
     }
-
-    if (!head && this.recovery) {
-      if (!effectiveLegacy || !sameLegacy(effectiveLegacy, this.recovery.legacy)) {
-        throw storeError("append", expected.revision, "recovery legacy source does not match the prepared intent")
-      }
-      const planned = recordPlan(this.binding, 1, null, snapshot, effectiveLegacy, undefined)
-      if (planned.digest !== this.recovery.digest) {
-        throw storeError("append", expected.revision, "recovery snapshot does not match the prepared intent")
-      }
-    }
-    return this.publish("append", expected.revision + 1, head?.digest ?? null, snapshot, effectiveLegacy)
+    return this.publish("append", expected.revision + 1, head?.digest ?? null, snapshot)
   }
 
   private async compactLocked(expected: { revision: number; digest: string }, snapshot: CheckpointSnapshot): Promise<PrivateHead> {
@@ -492,7 +395,7 @@ class FileStore implements PrivateStore {
     assertRuntimeProofPrefix(head.snapshot.runtimeProof, snapshot.runtimeProof)
 
     const revision = head.revision + 1
-    const published = await this.publish("compact", revision, head.digest, snapshot, head.legacy,
+    const published = await this.publish("compact", revision, head.digest, snapshot,
       { throughRevision: head.revision, throughDigest: head.digest }, async () => {
         await this.hook("base-verified", "compact", revision)
         await this.removeSuperseded(revision, "compact")
@@ -508,7 +411,7 @@ class FileStore implements PrivateStore {
   }
 
   private async publish(operation: string, revision: number, previous: string | null, snapshot: CheckpointSnapshot,
-    legacy: LegacySource | undefined, compaction?: { throughRevision: number; throughDigest: string },
+    compaction?: { throughRevision: number; throughDigest: string },
     afterVerified?: () => Promise<void>): Promise<PrivateHead> {
     const finalName = revisionName(operation, revision)
     const finalPath = join(this.directory, finalName)
@@ -516,7 +419,7 @@ class FileStore implements PrivateStore {
       throw storeError(operation, revision, "destination revision already exists")
     }
 
-    const plan = recordPlan(this.binding, revision, previous, snapshot, legacy, compaction)
+    const plan = recordPlan(this.binding, revision, previous, snapshot, compaction)
     const { digest, payload } = plan
     const envelope = JSON.stringify({ payload, digest })
 
@@ -672,10 +575,6 @@ class FileStore implements PrivateStore {
       files.push({ revision, path: join(this.directory, entry.name) })
     }
     files.sort((left, right) => left.revision - right.revision)
-    if (this.recovery && files.length === 0 && pendingRevisions.some((revision) => revision !== 1)) {
-      throw storeError(operation, undefined, "pending revision is not the interrupted genesis revision")
-    }
-
     const records: ParsedRecord[] = []
     for (const file of files) {
       const text = await readOwnerEntry(file.path, operation, file.revision)
@@ -704,7 +603,7 @@ class FileStore implements PrivateStore {
       throw storeError(operation, fileRevision, "record payload is not valid JSON")
     }
     if (!isPlainObject(payload) || !hasExactKeys(payload,
-      ["kind", "version", "binding", "revision", "previous", "compaction", "legacy", "state"],
+      ["kind", "version", "binding", "revision", "previous", "compaction", "state"],
       ["runtimeProof", "legacyOutboxIDs"])
       || payload.kind !== KIND || payload.version !== VERSION) {
       throw storeError(operation, fileRevision, "record envelope is invalid")
@@ -725,7 +624,6 @@ class FileStore implements PrivateStore {
     if (compaction && (revision !== compaction.throughRevision + 1 || payload.previous !== compaction.throughDigest)) {
       throw storeError(operation, revision, "compaction predecessor is invalid")
     }
-    const legacy = parseLegacy(payload.legacy, operation, revision)
     const state = parseConversationState(payload.state)
     if (state.discussions.some((discussion) => discussion.owner.sessionID !== this.binding.owner
       || discussion.owner.agent !== this.binding.agent
@@ -740,7 +638,6 @@ class FileStore implements PrivateStore {
       digest: envelope.digest,
       previous: payload.previous as string | null,
       ...(compaction === undefined ? {} : { compaction }),
-      ...(legacy === undefined ? {} : { legacy }),
       snapshot: {
         state,
         ...(runtimeProof === undefined ? {} : { runtimeProof }),
@@ -765,7 +662,6 @@ class FileStore implements PrivateStore {
   private verifyRecords(records: ParsedRecord[] | undefined, operation: string): PrivateHead | undefined {
     if (records === undefined) return undefined
     if (records.length === 0) {
-      if (this.recovery) return undefined
       throw storeError(operation, undefined, "existing owner directory has no committed revisions")
     }
     const byRevision = new Map<number, ParsedRecord>()
@@ -784,9 +680,6 @@ class FileStore implements PrivateStore {
       }
       if (through) {
         assertRuntimeProofPrefix(through.snapshot.runtimeProof, base.snapshot.runtimeProof)
-        if (!sameLegacy(through.legacy, base.legacy)) {
-          throw storeError(operation, base.revision, "legacy source changed across compaction")
-        }
       }
 
       let prior: ParsedRecord | undefined
@@ -803,43 +696,30 @@ class FileStore implements PrivateStore {
         }
         if (prior) {
           assertRuntimeProofPrefix(prior.snapshot.runtimeProof, record.snapshot.runtimeProof)
-          if (!sameLegacy(prior.legacy, record.legacy)) {
-            throw storeError(operation, revision, "legacy source changed")
-          }
         }
         prior = record
       }
 
       let previous = base.digest
       let proof: RuntimeJournal | undefined = base.snapshot.runtimeProof
-      let legacy = base.legacy
       for (let revision = base.revision + 1; revision <= highest; revision += 1) {
         const record = byRevision.get(revision)
         if (!record) throw storeError(operation, revision, "revision is missing")
         if (record.previous !== previous) throw storeError(operation, revision, "predecessor digest is invalid")
         assertRuntimeProofPrefix(proof, record.snapshot.runtimeProof)
-        if (!sameLegacy(legacy, record.legacy)) throw storeError(operation, revision, "legacy source changed")
         previous = record.digest
         proof = record.snapshot.runtimeProof
-        legacy = record.legacy
       }
     } else {
       let previous: string | null = null
       let proof: RuntimeJournal | undefined
-      let legacy: LegacySource | undefined
       for (let revision = 1; revision <= highest; revision += 1) {
         const record = byRevision.get(revision)
         if (!record) throw storeError(operation, revision, "revision is missing")
         if (record.previous !== previous) throw storeError(operation, revision, "predecessor digest is invalid")
         assertRuntimeProofPrefix(proof, record.snapshot.runtimeProof)
-        // A migration import may introduce the legacy source at genesis, but
-        // every later append must carry it unchanged.
-        if (revision > 1 && !sameLegacy(legacy, record.legacy)) {
-          throw storeError(operation, revision, "legacy source changed")
-        }
         previous = record.digest
         proof = record.snapshot.runtimeProof
-        legacy = record.legacy
       }
     }
 
@@ -848,7 +728,6 @@ class FileStore implements PrivateStore {
       revision: head.revision,
       digest: head.digest,
       snapshot: head.snapshot,
-      ...(head.legacy === undefined ? {} : { legacy: head.legacy }),
       ...(head.compaction === undefined ? {} : { compaction: head.compaction }),
     }
   }
@@ -974,284 +853,6 @@ class FileStore implements PrivateStore {
   }
 }
 
-const BOUNDARY_DIRECTORY = "migrations"
-const BOUNDARY_KEYS = ["kind", "version", "state", "project", "directory", "owner", "agent", "source", "private", "token"] as const
-const BOUNDARY_FILE_PATTERN = /^[a-f0-9]{64}\.json$/u
-const BOUNDARY_PENDING_PATTERN = /^\.pending-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
-
-async function assertBoundaryEntries(
-  directory: string,
-  entries: readonly string[],
-  target: string,
-  operation: string,
-): Promise<void> {
-  for (const entry of entries) {
-    if (entry === target || BOUNDARY_FILE_PATTERN.test(entry)) continue
-    if (!BOUNDARY_PENDING_PATTERN.test(entry)) {
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory contains an unknown entry`)
-    }
-    let stats: StatLike
-    try {
-      stats = await lstat(join(directory, entry))
-    } catch {
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: pending boundary is unreadable`)
-    }
-    // An interrupted atomic write may leave a partial regular file, but never a
-    // symlink, directory, foreign owner or multiply linked file. The contents are
-    // intentionally not read: the pending name is not committed boundary state.
-    assertBoundaryFile(stats, operation)
-  }
-}
-
-function assertBoundaryDirectory(stats: StatLike, operation: string): void {
-  try {
-    assertDirectory(stats, operation)
-  } catch (error) {
-    throw new PrivateStoreError(error instanceof Error ? error.message : "migration boundary directory is invalid")
-  }
-}
-
-function assertBoundaryFile(stats: StatLike, operation: string): void {
-  try {
-    assertFile(stats, operation)
-  } catch (error) {
-    throw new PrivateStoreError(error instanceof Error ? error.message : "migration boundary file is invalid")
-  }
-}
-
-function parseBoundary(value: unknown, expected?: { project: string; owner: Owner }): MigrationBoundary {
-  if (!isPlainObject(value) || !hasExactKeys(value, BOUNDARY_KEYS)
-    || value.kind !== "opencode-debate-migration-boundary" || value.version !== 1
-    || !["prepared", "committed", "retiring", "retired"].includes(String(value.state))
-    || !nonEmptyString(value.project) || !nonEmptyString(value.directory)
-    || !nonEmptyString(value.owner) || !nonEmptyString(value.agent)
-    || !isPlainObject(value.private) || !hasExactKeys(value.private, ["revision", "digest"])
-    || !Number.isSafeInteger(value.private.revision) || (value.private.revision as number) < 1
-    || typeof value.private.digest !== "string" || !DIGEST_PATTERN.test(value.private.digest)
-    || typeof value.token !== "string" || !DIGEST_PATTERN.test(value.token)) {
-    throw new PrivateStoreError("Automatic-debate migration boundary is invalid")
-  }
-  let source: LegacySource
-  try {
-    source = validateLegacy(value.source)
-  } catch {
-    throw new PrivateStoreError("Automatic-debate migration boundary source is invalid")
-  }
-  const directory = resolve(value.directory)
-  if (expected && (value.project !== expected.project || value.owner !== expected.owner.sessionID
-    || value.agent !== expected.owner.agent || directory !== resolve(expected.owner.directory))) {
-    throw new PrivateStoreError("Automatic-debate migration boundary binding is invalid")
-  }
-  return {
-    kind: "opencode-debate-migration-boundary",
-    version: 1,
-    state: value.state as MigrationBoundary["state"],
-    project: value.project,
-    directory,
-    owner: value.owner,
-    agent: value.agent,
-    source,
-    private: { revision: value.private.revision as number, digest: value.private.digest },
-    token: value.token,
-  }
-}
-
-export function migrationBoundaryPath(stateRoot: string, project: string, owner: Owner): string {
-  return join(privateStoreRoot(stateRoot), BOUNDARY_DIRECTORY, `${privateOwnerKey(project, owner)}.json`)
-}
-
-export async function readMigrationBoundary(
-  stateRoot: string,
-  project: string,
-  owner: Owner,
-): Promise<MigrationBoundary | undefined> {
-  const operation = "migration boundary read"
-  let current = resolve(stateRoot)
-  for (const component of ROOT_COMPONENTS) {
-    const next = join(current, component)
-    let stats: StatLike
-    try {
-      stats = await lstat(next)
-    } catch (error) {
-      if (codeOf(error) === "ENOENT") return undefined
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: plugin path is unreadable`)
-    }
-    assertBoundaryDirectory(stats, operation)
-    current = next
-  }
-
-  const directory = join(current, BOUNDARY_DIRECTORY)
-  let directoryStats: StatLike
-  try {
-    directoryStats = await lstat(directory)
-  } catch (error) {
-    if (codeOf(error) === "ENOENT") return undefined
-    throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory is unreadable`)
-  }
-  assertBoundaryDirectory(directoryStats, operation)
-
-  const name = `${privateOwnerKey(project, owner)}.json`
-  let entries: string[]
-  try {
-    entries = await readdir(directory)
-  } catch {
-    throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory is unreadable`)
-  }
-  await assertBoundaryEntries(directory, entries, name, operation)
-  if (!entries.includes(name)) return undefined
-
-  let text: string
-  try {
-    text = await readOwnerEntry(join(directory, name), operation, 1)
-  } catch (error) {
-    throw new PrivateStoreError(error instanceof Error ? error.message : "migration boundary is unreadable")
-  }
-  let envelope: unknown
-  try {
-    envelope = JSON.parse(text) as unknown
-  } catch {
-    throw new PrivateStoreError("Automatic-debate migration boundary is invalid")
-  }
-  if (!isPlainObject(envelope) || !hasExactKeys(envelope, ["payload", "digest"])
-    || typeof envelope.payload !== "string" || typeof envelope.digest !== "string"
-    || !DIGEST_PATTERN.test(envelope.digest) || envelope.digest !== sha256(envelope.payload)) {
-    throw new PrivateStoreError("Automatic-debate migration boundary envelope or digest is invalid")
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(envelope.payload) as unknown
-  } catch {
-    throw new PrivateStoreError("Automatic-debate migration boundary payload is invalid")
-  }
-  return parseBoundary(parsed, { project, owner })
-}
-
-async function ensureBoundaryDirectory(stateRoot: string, operation: string): Promise<string> {
-  let current = resolve(stateRoot)
-  for (const component of ROOT_COMPONENTS) {
-    const next = join(current, component)
-    let stats: StatLike | undefined
-    let created = false
-    try {
-      stats = await lstat(next)
-    } catch (error) {
-      if (codeOf(error) !== "ENOENT") {
-        throw new PrivateStoreError(`Automatic-debate private store ${operation}: plugin path is unreadable`)
-      }
-      try {
-        await mkdir(next, { mode: 0o700 })
-        created = true
-      } catch (createError) {
-        if (codeOf(createError) !== "EEXIST") {
-          throw new PrivateStoreError(`Automatic-debate private store ${operation}: plugin path could not be created`)
-        }
-      }
-      try {
-        if (created) await chmod(next, 0o700)
-        stats = await lstat(next)
-      } catch {
-        throw new PrivateStoreError(`Automatic-debate private store ${operation}: plugin path could not be verified`)
-      }
-      assertBoundaryDirectory(stats, operation)
-      await syncDirectory(current, operation)
-    }
-    assertBoundaryDirectory(stats, operation)
-    current = next
-  }
-
-  const directory = join(current, BOUNDARY_DIRECTORY)
-  let stats: StatLike | undefined
-  let created = false
-  try {
-    stats = await lstat(directory)
-  } catch (error) {
-    if (codeOf(error) !== "ENOENT") {
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory is unreadable`)
-    }
-    try {
-      await mkdir(directory, { mode: 0o700 })
-      created = true
-    } catch (createError) {
-      if (codeOf(createError) !== "EEXIST") {
-        throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory could not be created`)
-      }
-    }
-    try {
-      if (created) await chmod(directory, 0o700)
-      stats = await lstat(directory)
-    } catch {
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory could not be verified`)
-    }
-    assertBoundaryDirectory(stats, operation)
-    await syncDirectory(current, operation)
-  }
-  assertBoundaryDirectory(stats, operation)
-  return directory
-}
-
-export async function writeMigrationBoundary(stateRoot: string, boundary: MigrationBoundary): Promise<void> {
-  const operation = "migration boundary write"
-  const normalized = parseBoundary(boundary)
-  const directory = await ensureBoundaryDirectory(stateRoot, operation)
-  const name = `${privateOwnerKey(normalized.project, {
-    sessionID: normalized.owner,
-    agent: normalized.agent,
-    directory: normalized.directory,
-  })}.json`
-  const finalPath = join(directory, name)
-  let entries: string[]
-  try {
-    entries = await readdir(directory)
-  } catch {
-    throw new PrivateStoreError(`Automatic-debate private store ${operation}: migration directory is unreadable`)
-  }
-  await assertBoundaryEntries(directory, entries, name, operation)
-
-  const payload = JSON.stringify(normalized)
-  const envelope = JSON.stringify({ payload, digest: sha256(payload) })
-  const pendingPath = join(directory, `.pending-${randomUUID()}`)
-  let handle
-  try {
-    handle = await open(pendingPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-  } catch {
-    throw new PrivateStoreError(`Automatic-debate private store ${operation}: pending file could not be created`)
-  }
-  let published = false
-  try {
-    try {
-      await handle.chmod(0o600)
-      await handle.writeFile(envelope, "utf8")
-      await handle.sync()
-      await handle.close()
-    } catch {
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: pending file could not be written`)
-    }
-    try {
-      await rename(pendingPath, finalPath)
-      published = true
-    } catch {
-      throw new PrivateStoreError(`Automatic-debate private store ${operation}: pending file could not be renamed`)
-    }
-    await syncDirectory(directory, operation)
-  } catch (error) {
-    if (!published) {
-      try { await unlink(pendingPath) } catch { /* The durable failure evidence remains authoritative. */ }
-    }
-    throw error
-  } finally {
-    try { await handle.close() } catch { /* Already closed or failed before publication. */ }
-  }
-
-  const readBack = await readMigrationBoundary(stateRoot, normalized.project, {
-    sessionID: normalized.owner,
-    agent: normalized.agent,
-    directory: normalized.directory,
-  })
-  if (!readBack || JSON.stringify(readBack) !== JSON.stringify(normalized)) {
-    throw new PrivateStoreError(`Automatic-debate private store ${operation}: boundary did not verify`)
-  }
-}
-
 export async function openPrivateStore(options: Options): Promise<PrivateStore> {
   if (process.platform !== "linux") {
     throw new Error(`Automatic-debate private storage is unsupported on ${process.platform}`)
@@ -1271,24 +872,10 @@ export async function openPrivateStore(options: Options): Promise<PrivateStore> 
     owner: owner.sessionID,
     agent: owner.agent,
   }
-  let recovery: RecoveryPlan | undefined
-  if (options.recovery) {
-    if (options.recovery.revision !== 1 || typeof options.recovery.digest !== "string"
-      || !DIGEST_PATTERN.test(options.recovery.digest)) {
-      throw new Error("Automatic-debate interrupted genesis recovery intent is invalid")
-    }
-    const legacy = copyLegacy(validateLegacy(options.recovery.legacy))
-    const planned = recordPlan(binding, 1, null, options.recovery.snapshot, legacy, undefined)
-    if (planned.digest !== options.recovery.digest) {
-      throw new Error("Automatic-debate interrupted genesis recovery digest does not match its binding and snapshot")
-    }
-    recovery = { ...planned, legacy }
-  }
   return new FileStore(
     binding,
     stateRoot,
     join(privateStoreRoot(stateRoot), privateOwnerKey(project, owner)),
     options.hooks,
-    recovery,
   )
 }

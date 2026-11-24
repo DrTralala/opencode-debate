@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import { test } from "node:test"
 import {
   createMiniDebateController,
@@ -316,8 +317,16 @@ test("config registers a no-agent/no-subtask mini-debate command", async () => {
   const command = config.command?.[MINI_DEBATE_COMMAND]
   assert.ok(command, "mini-debate command is registered")
   assert.equal(command.template, "$ARGUMENTS")
+  assert.match(command.description, /--participant <name>/)
+  assert.match(command.description, /--rounds <1-10>/)
   assert.equal(Object.hasOwn(command, "agent"), false)
   assert.equal(Object.hasOwn(command, "subtask"), false)
+})
+
+test("shipped mini-debate command help advertises the space-separated syntax", () => {
+  const source = readFileSync(new URL("../.opencode/commands/mini-debate.md", import.meta.url), "utf8")
+
+  assert.match(source, /^description: "Run \/mini-debate \[--participant <name>\] \[--rounds <1-10>\] <topic>"$/m)
 })
 
 test("config registers read-only aliases for every selectable participant with model and variant", async () => {

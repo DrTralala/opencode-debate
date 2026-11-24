@@ -105,40 +105,38 @@ assert_contains "package.json" '"scripts/format_response.py"'
 assert_contains "package.json" '"publishConfig": {'
 assert_contains "package.json" '"access": "public"'
 assert_contains "README.md" '"opencode-debate@latest"'
-assert_not_contains "README.md" 'For a reproducible installation, pin the exact release:'
-assert_not_contains "README.md" 'git+https://github.com/DrTralala/opencode-debate.git'
-assert_not_contains "README.md" 'this package is not published to npm'
 assert_contains "README.md" 'https://github.com/DrTralala/opencode-debate/releases/latest'
 assert_contains "README.md" 'img.shields.io/github/v/release/DrTralala/opencode-debate?label=version&color=blue&sort=date&style=flat-square'
-assert_contains "README.md" "selected set's continuation mode"
-assert_contains "README.md" 'Python response-formatter and HTML-generator tests'
 assert_contains "README.md" 'Python 3.9 or later'
 assert_contains "README.md" 'docs/debates/'
-assert_contains "README.md" 'GPT-5.6 Sol, `xhigh`'
-assert_contains "README.md" '${XDG_CONFIG_HOME:-~/.config}/opencode/opencode-debate/config.yaml'
+assert_contains "README.md" '${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode-debate/config.yaml'
 assert_contains "README.md" 'atomically creates it as an exact copy'
-assert_contains "README.md" "opencode-debate/auto-debate/v2/"
-assert_contains "README.md" "/debate-auto storage migrate"
-assert_contains "README.md" "Linux-only"
+assert_contains "README.md" 'never merged or rewritten'
+assert_contains "README.md" '<state>/opencode-debate/'
+assert_contains "README.md" '<state>/opencode-debate/auto-debate/v2/'
+assert_contains "README.md" 'not read, resumed, migrated or modified'
+assert_not_contains "README.md" '/debate-auto storage status'
+assert_not_contains "README.md" '/debate-auto storage migrate'
+assert_not_contains "README.md" '/debate-auto storage delete-source'
 assert_contains "README.md" "not encrypted"
-assert_contains "README.md" "native sessions and plugin state"
 assert_contains "README.md" 'complete, authoritative version 2 configuration'
-assert_contains "README.md" 'first set in YAML source order'
-assert_contains "README.md" 'quit and restart OpenCode'
-assert_contains "README.md" 'exact participant name manually with `@name`'
-assert_not_contains "README.md" 'Participant fields merge by participant ID'
-assert_not_contains "README.md" 'missing user file silently uses packaged defaults'
-assert_not_contains "README.md" 'GPT-5.6 Sol Pro'
-assert_not_contains "package.json" 'Trevor Leong <drtralala@outlook.com>'
+assert_contains "README.md" 'The packaged template'
+assert_contains "README.md" '`auto_debate.set` selects `alt`'
+assert_contains "README.md" 'Restart OpenCode'
+assert_contains "README.md" 'commandcode/Qwen/Qwen3.8-Max-Prime'
+assert_contains "README.md" '| `debate-qwen` | `commandcode/Qwen/Qwen3.8-Max-Prime` | not set |'
+assert_contains "README.md" '/mini-debate --participant debate-glm --rounds 5 Are there alternative ways to fix this bug?'
+assert_contains "README.md" '`--participant:<name>` form remains supported as an alias'
+assert_contains "README.md" 'auto-YYYY-MM-DD-<question-slug>.md'
+assert_contains "README.md" 'numeric suffix'
+assert_contains "README.md" 'appends its verified frames'
+assert_not_contains "README.md" 'auto-<discussion-id>.md'
 
 # Packaged defaults expose the mini-debate participant and round budget.
 assert_contains "config.example.yaml" "mini_debate:"
 assert_contains "config.example.yaml" "  participant: debate-glm"
 assert_contains "README.md" '/mini-debate <topic>'
 assert_contains "README.md" "mini_debate:"
-assert_contains "README.md" "mirrored to its mini alias"
-assert_contains "README.md" "same child session"
-assert_contains "README.md" "A topic is mandatory."
 
 # Local-only artefacts must not be tracked.
 assert_not_tracked ".opencode/package.json"
@@ -249,13 +247,11 @@ assert_not_contains ".opencode/agents/debate.md" "strip any markdown code fence,
 assert_not_contains ".opencode/agents/debate.md" 'treat both statuses for that participant as `false`'
 assert_not_contains ".opencode/agents/debate.md" "bash: allow"
 
-# Participant agents: mode, model+variant present (canonical source), hardened
-# permissions, non-editing body. Model IDs are intentionally not hard-coded here.
+# Participant agents: structural permission contract. The generator check below
+# validates model and optional variant fields, including Qwen's absent variant.
 for agent in debate-openai debate-glm debate-kimi debate-anthropic debate-qwen; do
   assert_contains ".opencode/agents/$agent.md" "mode: subagent"
   assert_contains ".opencode/agents/$agent.md" "hidden: true"
-  assert_contains ".opencode/agents/$agent.md" "model:"
-  assert_contains ".opencode/agents/$agent.md" "variant:"
   assert_contains ".opencode/agents/$agent.md" '  "*": "deny"'
   assert_contains ".opencode/agents/$agent.md" '    "*": "allow"'
   assert_contains ".opencode/agents/$agent.md" '    "*.env": "deny"'
@@ -291,7 +287,8 @@ assert_contains "src/debate.ts" "Participant set"
 assert_contains "src/debate.ts" "Resolved participants"
 assert_not_contains "src/debate.ts" "DEFAULT_SET"
 assert_line "config.example.yaml" "version: 2"
-assert_contains "config.example.yaml" "  cheap:"
+assert_contains "config.example.yaml" "  alt:"
+assert_contains "config.example.yaml" "  set: alt"
 
 # Behavioural checks: Python and Node unit tests and TypeScript typechecking.
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to generate transcript HTML"

@@ -205,11 +205,32 @@ function pathsInToolResults(messages: unknown): string[] {
   const paths: string[] = []
   visit(messages, (entry) => {
     if (isRecord(entry.persistence) && typeof entry.persistence.path === "string"
-      && /^docs\/debates\/auto-[0-9a-f-]+\.md$/u.test(entry.persistence.path)) {
+      && /^docs\/debates\/auto-\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/u.test(entry.persistence.path)) {
       paths.push(entry.persistence.path)
     }
   })
   return [...new Set(paths)]
+}
+
+async function transcriptForDiscussion(projectDirectory: string, discussionID: string): Promise<
+  { filename: string; path: string; relativePath: string; text: string } | undefined
+> {
+  const directory = join(projectDirectory, "docs", "debates")
+  const matches: { filename: string; path: string; relativePath: string; text: string }[] = []
+  let entries: string[]
+  try { entries = await readdir(directory) } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return undefined
+    throw error
+  }
+  for (const filename of entries.filter((entry) => entry.endsWith(".md"))) {
+    const path = join(directory, filename)
+    const text = await readFile(path, "utf8")
+    if (text.startsWith(`# Automatic debate\n\n**Discussion:** ${discussionID}\n`)) {
+      matches.push({ filename, path, relativePath: `docs/debates/${filename}`, text })
+    }
+  }
+  if (matches.length > 1) throw new Error(`Multiple automatic transcript files matched discussion ${discussionID}`)
+  return matches[0]
 }
 
 function providerServer(options: {
@@ -727,9 +748,8 @@ export default async function Task6FullPlugin(input, options) {
     const offWasEffective = blockedStartRejected && observations.participantPrompts.length === 6
     firstRoundRelease.release()
     await waitFor("both saved cycle-one transcript outcomes", async () => {
-      const paths = [alphaID, betaID].map((id) => join(projectDirectory, "docs", "debates", `auto-${id}.md`))
-      const transcripts = await Promise.all(paths.map((path) => readFile(path, "utf8").catch(() => "")))
-      return transcripts.every((text) => text.includes("**Status:** awaiting-evaluation")) ? true : undefined
+      const transcripts = await Promise.all([alphaID, betaID].map((id) => transcriptForDiscussion(projectDirectory, id)))
+      return transcripts.every((transcript) => transcript?.text.includes("**Status:** awaiting-evaluation")) ? true : undefined
     })
     await waitFor("two complete cycle-one panels after off", async () => {
       const requests = observations.participantPrompts
@@ -801,8 +821,8 @@ export default async function Task6FullPlugin(input, options) {
     // transcript checkpoint are visible. Wait for the saved awaiting-evaluation
     // state before exercising the terminal evaluation.
     await waitFor("resumed alpha cycle saved awaiting-evaluation", async () => {
-      const text = await readFile(join(projectDirectory, "docs", "debates", `auto-${alphaID}.md`), "utf8").catch(() => "")
-      const outcome = latestTranscriptOutcome(text)
+      const transcript = await transcriptForDiscussion(projectDirectory, alphaID)
+      const outcome = latestTranscriptOutcome(transcript?.text ?? "")
       return outcome?.cycle === 2 && outcome.status === "awaiting-evaluation" ? true : undefined
     })
     stage = "cancel the independent beta discussion"
@@ -832,13 +852,18 @@ export default async function Task6FullPlugin(input, options) {
     const reportMessages = await promptRoot("TASK6_E2E_REPORT_LINKS", { action: "status" })
     const transcriptPaths = pathsInToolResults(toolParts(reportMessages))
     const transcriptDirectory = join(projectDirectory, "docs", "debates")
-    const alphaTranscriptPath = join(projectDirectory, "docs", "debates", `auto-${alphaID}.md`)
-    const betaTranscriptPath = join(projectDirectory, "docs", "debates", `auto-${betaID}.md`)
-    const [alphaTranscript, betaTranscript] = await Promise.all([readFile(alphaTranscriptPath, "utf8"), readFile(betaTranscriptPath, "utf8")])
+    const [alphaRecord, betaRecord] = await Promise.all([
+      transcriptForDiscussion(projectDirectory, alphaID), transcriptForDiscussion(projectDirectory, betaID),
+    ])
+    if (!alphaRecord || !betaRecord) throw new Error("The reported automatic transcript records were not found")
+    const alphaRelativePath = alphaRecord.relativePath
+    const betaRelativePath = betaRecord.relativePath
+    const alphaTranscript = alphaRecord.text
+    const betaTranscript = betaRecord.text
     const transcriptEntries = await readdir(transcriptDirectory)
     const reportTextHasBothLinks = reportMessages.some((message) => Array.isArray(message.parts) && message.parts.some((part) => isRecord(part)
       && part.type === "text" && typeof part.text === "string"
-      && part.text.includes(`docs/debates/auto-${alphaID}.md`) && part.text.includes(`docs/debates/auto-${betaID}.md`)))
+      && part.text.includes(alphaRelativePath) && part.text.includes(betaRelativePath)))
     const reportAlpha = discussionSummaries(reportMessages).find((summary) => summary.id === alphaID)
     const evaluatedSecondSummary = discussionSummaries(evaluatedSecond).find((summary) => summary.id === alphaID)
     const alphaLatestOutcome = latestTranscriptOutcome(alphaTranscript)
@@ -866,12 +891,13 @@ export default async function Task6FullPlugin(input, options) {
       betaDecision: betaTranscript.includes("TASK6_BETA_DECISION"),
       alphaHasBeta: alphaTranscript.includes("TASK6_BETA_"),
       betaHasAlpha: betaTranscript.includes("TASK6_ALPHA_"),
-      htmlTranscripts: transcriptEntries.filter((entry) => entry === `auto-${alphaID}.html` || entry === `auto-${betaID}.html`),
+      htmlTranscripts: transcriptEntries.filter((entry) => entry === alphaRecord.filename.replace(/\.md$/u, ".html")
+        || entry === betaRecord.filename.replace(/\.md$/u, ".html")),
     }
     const transcriptLinksWereReturnedAndRecordsWereSaved = observations.reportPaths.length === 2
       && transcriptPaths.length === 2
-      && transcriptPaths.includes(`docs/debates/auto-${alphaID}.md`)
-      && transcriptPaths.includes(`docs/debates/auto-${betaID}.md`)
+      && transcriptPaths.includes(alphaRelativePath)
+      && transcriptPaths.includes(betaRelativePath)
       && reportTextHasBothLinks
       && alphaTranscript.includes(ALPHA_FEEDBACK)
       && alphaTranscript.includes("Main-agent evaluation")
@@ -883,7 +909,8 @@ export default async function Task6FullPlugin(input, options) {
       && betaTranscript.includes("cancelled")
       && betaTranscript.includes("TASK6_BETA_DECISION")
       && !alphaTranscript.includes("TASK6_BETA_") && !betaTranscript.includes("TASK6_ALPHA_")
-      && !transcriptEntries.some((entry) => entry === `auto-${alphaID}.html` || entry === `auto-${betaID}.html`)
+      && !transcriptEntries.some((entry) => entry === alphaRecord.filename.replace(/\.md$/u, ".html")
+        || entry === betaRecord.filename.replace(/\.md$/u, ".html"))
       && (await realpath(transcriptDirectory)).startsWith(`${workspace}/`)
     assert.equal(transcriptLinksWereReturnedAndRecordsWereSaved, true,
       `the parent must return both actual Markdown transcript links and each append-only record must retain only its own discussion: ${JSON.stringify(transcriptLinkDetails)}`)
@@ -920,7 +947,7 @@ export default async function Task6FullPlugin(input, options) {
       resetRestoredConfiguredDefault,
       panelPromptCount: observations.participantPrompts.length,
       uniqueParticipantSessions: new Set(observations.participantPrompts.map((prompt) => prompt.sessionID)).size,
-      transcriptPaths: [`docs/debates/auto-${alphaID}.md`, `docs/debates/auto-${betaID}.md`],
+      transcriptPaths: [alphaRelativePath, betaRelativePath],
       discussionIDs: { alpha: alphaID, beta: betaID },
       participantSessionIDs: { alpha: alphaSessions, beta: betaSessions },
       providerRequests: [...observations.parentCalls.values()].reduce((total, count) => total + count, 0)
@@ -1107,7 +1134,7 @@ export default async function(input, options) {
       const paths = responseData<RecordValue>(await client.path.get({ query: { directory: projectDirectory } }), "private state path")
       const stateProject = responseData<RecordValue>(await client.project.current({ query: { directory: projectDirectory } }), "project lookup")
       if (typeof paths.state !== "string" || typeof stateProject.id !== "string") throw new Error("Private state path is unavailable")
-      const directory = join(paths.state, "opencode-debate", "auto-debate", "v2",
+      const directory = join(paths.state, "opencode-debate",
         privateOwnerKey(stateProject.id, { sessionID: id, agent: "build", directory: projectDirectory }))
       const names = (await readdir(directory)).filter((name) => /^\d{16}\.json$/.test(name)).sort()
       const records: RecordValue[] = []
@@ -1148,8 +1175,8 @@ export default async function(input, options) {
     assert.ok(firstID, `first native start failed: ${JSON.stringify(toolParts(startMessages).map((part) => part.state))}`)
     const startProof = await checkAdmission(startOwner.id, startMessages)
     const complete = async (id: string) => waitFor("final fix saved complete cycle", async () => {
-      const text = await readFile(join(projectDirectory, "docs", "debates", `auto-${id}.md`), "utf8").catch(() => "")
-      return text.includes("**Status:** awaiting-evaluation") ? true : undefined
+      const transcript = await transcriptForDiscussion(projectDirectory, id)
+      return transcript?.text.includes("**Status:** awaiting-evaluation") ? true : undefined
     })
     await complete(firstID)
     assert.equal(observations.participantPrompts.filter((prompt) => prompt.discussionID === firstID).length, 6)
@@ -1270,8 +1297,8 @@ export default async function(input, options) {
         action: "resume", discussion_id: id, feedback: "Explicit user stop must win over this requested follow-up",
       })
       assert.match(toolError(messages), /cancelled/i)
-      const transcript = await readFile(join(projectDirectory, "docs", "debates", `auto-${id}.md`), "utf8")
-      assert.ok(transcript.includes("**Status:** cancelled") && transcript.includes("Main-agent evaluation"))
+      const transcript = await transcriptForDiscussion(projectDirectory, id)
+      assert.ok(transcript?.text.includes("**Status:** cancelled") && transcript.text.includes("Main-agent evaluation"))
     }
     assert.equal(observations.participantPrompts.length, promptsAfterStop)
     const foreignStatus = await invoke(statusOwner, "TASK6_E2E_FIX_FOREIGN_STATUS", { action: "status", discussion_id: foreignID })
@@ -1358,8 +1385,8 @@ export default async function(input, options) {
       assert.deepEqual(confirmed, [...firstSessions, ...secondSessions].sort(), "all six cessations require durable verified receipts")
       corrective!.batches.at(-1)!.confirmedStopSessionIDs = confirmed
       for (const id of ids) {
-        const transcript = await readFile(join(projectDirectory, "docs", "debates", `auto-${id}.md`), "utf8")
-        assert.ok(transcript.includes("**Status:** cancelled") && transcript.includes(reason))
+        const transcript = await transcriptForDiscussion(projectDirectory, id)
+        assert.ok(transcript?.text.includes("**Status:** cancelled") && transcript.text.includes(reason))
       }
       assert.equal(observations.participantPrompts.filter((prompt) => ids.includes(prompt.discussionID)).length, 6)
       assert.deepEqual(await Promise.all(foreignSessionIDs.map((id) => nativeMessages(client, projectDirectory, id))), foreignHistoryBefore)

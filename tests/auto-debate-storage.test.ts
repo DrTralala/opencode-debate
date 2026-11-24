@@ -8,14 +8,14 @@ import { createRuntime } from "../src/auto-debate/opencode.ts"
 import { privateOwnerKey } from "../src/auto-debate/private-store.ts"
 import { selectStorageBackend } from "../src/auto-debate/storage.ts"
 import { parseConversationState } from "../src/auto-debate/validation.ts"
-import type { MigrationBoundary, NativeMigrationMarker, Owner } from "../src/auto-debate/types.ts"
+import type { NativeMigrationMarker, Owner } from "../src/auto-debate/types.ts"
 import { privateStorageClient } from "./fixtures/private-storage-client.ts"
 
 type Fixture = Awaited<ReturnType<typeof privateStorageClient>>
 const emptyState = { version: 1 as const, discussions: [] as never[], outbox: [] as never[] }
 
 function pluginRoot(f: Fixture): string {
-  return join(f.stateRoot, "opencode-debate", "auto-debate", "v2")
+  return join(f.stateRoot, "opencode-debate")
 }
 
 function ownerDirectory(f: Fixture, owner: Owner = f.owner): string {
@@ -24,7 +24,7 @@ function ownerDirectory(f: Fixture, owner: Owner = f.owner): string {
 
 async function privateChain(f: Fixture): Promise<string> {
   let current = f.stateRoot
-  for (const component of ["opencode-debate", "auto-debate", "v2"]) {
+  for (const component of ["opencode-debate"]) {
     current = join(current, component)
     await mkdir(current, { mode: 0o700 })
     await chmod(current, 0o700)
@@ -92,7 +92,27 @@ test("a new Linux owner stores state privately with no checkpoint child", async 
       "no native checkpoint child may be created for a new Linux owner")
     assert.equal(f.modelCalls(), 0)
     assert.ok((await readdir(f.stateRoot, { recursive: true })).some((path) =>
-      path.endsWith("0000000000000001.json")))
+      path.startsWith("opencode-debate/") && path.endsWith("0000000000000001.json")))
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("auto mode does not discover or alter the old v2 private store for the same owner", async () => {
+  const f = await privateStorageClient()
+  try {
+    const oldDirectory = join(pluginRoot(f), "auto-debate", "v2", privateOwnerKey(f.projectID, f.owner))
+    await mkdir(oldDirectory, { recursive: true, mode: 0o700 })
+    const oldRevision = join(oldDirectory, "0000000000000001.json")
+    const contents = "old private state is not a fallback"
+    await writeFile(oldRevision, contents, { mode: 0o600 })
+
+    const runtime = createRuntime(f.input, { storage: "auto" })
+    assert.equal(await runtime.load(f.owner), undefined)
+    assert.equal(await readFile(oldRevision, "utf8"), contents)
+    assert.deepEqual(await readdir(oldDirectory), ["0000000000000001.json"])
+    assert.equal(f.calls.some((call) => call.method === "create"), false)
+    assert.equal(f.modelCalls(), 0)
   } finally {
     await f.cleanup()
   }
@@ -118,7 +138,7 @@ test("an existing native owner stays native in auto mode without creating privat
     const runtime = createRuntime(f.input, { storage: "auto" })
     assert.deepEqual(await runtime.load(f.owner), emptyState)
     assert.equal((await readdir(f.stateRoot, { recursive: true })).some((path) =>
-      path.includes("opencode-debate/auto-debate/v2")), false)
+      path === "opencode-debate" || path.startsWith("opencode-debate/")), false)
   } finally {
     await f.cleanup()
   }
@@ -214,7 +234,7 @@ test("Linux auto mode rejects every unsafe private path without native creation"
   }
 })
 
-test("the backend selection matrix fails closed on every ambiguous combination", () => {
+test("the backend selection preserves native compatibility and fails closed on markers or mixed state", () => {
   const snapshot = { state: { version: 1 as const, discussions: [], outbox: [] } }
   const source = { storeID: "native-store", revision: 2, head: "msg-head", digest: "a".repeat(64) }
   const nativeHead = { ...source, snapshot }
@@ -223,56 +243,23 @@ test("the backend selection matrix fails closed on every ambiguous combination",
     private: { revision: 1, digest: "c".repeat(64) }, token: "d".repeat(64),
   }
   const markedNative = { ...nativeHead, migration: marker }
-  const privateHead = { revision: 1, digest: "c".repeat(64), snapshot, legacy: source }
-  const boundary = (state: MigrationBoundary["state"], overrides: Partial<MigrationBoundary> = {}): MigrationBoundary => ({
-    kind: "opencode-debate-migration-boundary", version: 1, state, project: "p", directory: "/p",
-    owner: "o", agent: "a", source, private: { revision: 1, digest: "c".repeat(64) },
-    token: "d".repeat(64), ...overrides,
-  })
-  const conflicting = (actual: ReturnType<typeof selectStorageBackend>) => {
-    assert.equal(actual.kind, "conflict")
-  }
+  const privateHead = { revision: 1, digest: "c".repeat(64), snapshot }
 
   assert.deepEqual(selectStorageBackend("win32", { native: nativeHead }), { kind: "native" })
   assert.deepEqual(selectStorageBackend("win32", { native: markedNative }), {
     kind: "conflict", reason: "linux-migration-marker",
   })
-  assert.deepEqual(selectStorageBackend("win32", {
-    private: privateHead, boundary: boundary("prepared"),
-  }), { kind: "native" })
+  assert.deepEqual(selectStorageBackend("win32", { private: privateHead }), { kind: "native" })
 
   assert.deepEqual(selectStorageBackend("linux", {}), { kind: "new-private" })
   assert.deepEqual(selectStorageBackend("linux", { native: nativeHead }), { kind: "native" })
-  conflicting(selectStorageBackend("linux", { native: markedNative }))
+  assert.deepEqual(selectStorageBackend("linux", { native: markedNative }), {
+    kind: "conflict", reason: "linux-migration-marker",
+  })
   assert.deepEqual(selectStorageBackend("linux", { private: privateHead }), { kind: "private" })
-  conflicting(selectStorageBackend("linux", { native: nativeHead, private: privateHead }))
-  conflicting(selectStorageBackend("linux", { boundary: boundary("committed") }))
-  conflicting(selectStorageBackend("linux", { boundary: boundary("retired") }))
-  conflicting(selectStorageBackend("linux", { private: privateHead, boundary: boundary("prepared") }))
-  conflicting(selectStorageBackend("linux", { native: markedNative, private: privateHead, boundary: boundary("prepared") }))
-  conflicting(selectStorageBackend("linux", { native: markedNative, boundary: boundary("prepared") }))
-  conflicting(selectStorageBackend("linux", { private: privateHead, boundary: boundary("committed") }))
-  assert.deepEqual(selectStorageBackend("linux", {
-    native: markedNative, private: privateHead, boundary: boundary("committed"),
-  }), { kind: "private" })
-  conflicting(selectStorageBackend("linux", {
-    native: nativeHead, private: privateHead, boundary: boundary("committed"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: privateHead,
-    boundary: boundary("committed", { source: { ...source, head: "different-head" } }),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: privateHead,
-    boundary: boundary("committed", { private: { revision: 1, digest: "e".repeat(64) } }),
-  }))
-  conflicting(selectStorageBackend("linux", { private: privateHead, boundary: boundary("retiring") }))
-  conflicting(selectStorageBackend("linux", { native: markedNative, private: privateHead, boundary: boundary("retiring") }))
-  assert.deepEqual(selectStorageBackend("linux", {
-    private: privateHead, boundary: boundary("retired"),
-  }), { kind: "private" })
-  conflicting(selectStorageBackend("linux", { native: markedNative, boundary: boundary("retired") }))
-  conflicting(selectStorageBackend("linux", { native: markedNative, private: privateHead, boundary: boundary("retired") }))
+  assert.deepEqual(selectStorageBackend("linux", { native: nativeHead, private: privateHead }), {
+    kind: "conflict", reason: "native-and-private",
+  })
 })
 
 
@@ -309,74 +296,6 @@ test("migration-marker-only renamed native children fail closed instead of disap
       await f.cleanup()
     }
   }
-})
-
-test("migrated private selection requires exact legacy provenance and the import floor", () => {
-  const snapshot = { state: { version: 1 as const, discussions: [], outbox: [] } }
-  const source = { storeID: "native-store", revision: 2, head: "msg-head", digest: "a".repeat(64) }
-  const nativeHead = { ...source, snapshot }
-  const marker: NativeMigrationMarker = {
-    kind: "opencode-debate-migrated", version: 1, privateOwnerKey: "b".repeat(64), source,
-    private: { revision: 1, digest: "c".repeat(64) }, token: "d".repeat(64),
-  }
-  const markedNative = { ...nativeHead, migration: marker }
-  const boundary = (state: MigrationBoundary["state"], overrides: Partial<MigrationBoundary> = {}): MigrationBoundary => ({
-    kind: "opencode-debate-migration-boundary", version: 1, state, project: "p", directory: "/p",
-    owner: "o", agent: "a", source, private: { revision: 1, digest: "c".repeat(64) },
-    token: "d".repeat(64), ...overrides,
-  })
-  const atFloor = { revision: 1, digest: "c".repeat(64), snapshot, legacy: source }
-  const advanced = { revision: 2, digest: "e".repeat(64), snapshot, legacy: source }
-  const missingLegacy = { revision: 2, digest: "e".repeat(64), snapshot }
-  const differentLegacy = { ...advanced, legacy: { ...source, head: "different-head" } }
-  const conflicting = (value: ReturnType<typeof selectStorageBackend>) => assert.equal(value.kind, "conflict")
-
-  assert.deepEqual(selectStorageBackend("linux", {
-    native: markedNative, private: advanced, boundary: boundary("committed"),
-  }), { kind: "private" })
-  assert.deepEqual(selectStorageBackend("linux", {
-    native: markedNative, private: atFloor, boundary: boundary("committed"),
-  }), { kind: "private" })
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: missingLegacy, boundary: boundary("committed"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: differentLegacy, boundary: boundary("committed"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: { ...atFloor, legacy: { ...source, digest: "f".repeat(64) } },
-    boundary: boundary("committed"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: atFloor,
-    boundary: boundary("committed", { private: { revision: 2, digest: "e".repeat(64) } }),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    native: markedNative, private: { ...atFloor, digest: "f".repeat(64) },
-    boundary: boundary("committed"),
-  }))
-
-  assert.deepEqual(selectStorageBackend("linux", {
-    private: advanced, boundary: boundary("retired"),
-  }), { kind: "private" })
-  conflicting(selectStorageBackend("linux", {
-    private: missingLegacy, boundary: boundary("retired"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    private: differentLegacy, boundary: boundary("retired"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    private: { ...atFloor, legacy: { ...source, storeID: "other-store" } },
-    boundary: boundary("retired"),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    private: atFloor,
-    boundary: boundary("retired", { private: { revision: 2, digest: "e".repeat(64) } }),
-  }))
-  conflicting(selectStorageBackend("linux", {
-    private: { ...atFloor, digest: "f".repeat(64) },
-    boundary: boundary("retired"),
-  }))
 })
 
 test("a host-witnessed first invocation is admitted into absent-native inspection and private save", async () => {

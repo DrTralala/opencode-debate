@@ -2,7 +2,7 @@
 description: Neutral debate participant from Anthropic
 mode: subagent
 hidden: true
-model: openrouter/anthropic/claude-opus-5
+model: openrouter/anthropic/claude-opus-5.5
 variant: high
 permission:
   "*": "deny"

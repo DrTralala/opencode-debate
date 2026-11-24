@@ -24,7 +24,7 @@ export const MINI_DEBATE_ALIAS_PREFIX = "opencode-debate-mini-"
 export const MINI_DEBATE_COMMAND = "mini-debate"
 export const MINI_DEBATE_TOOL = "mini_debate"
 export const MINI_DEBATE_COMMAND_DESCRIPTION =
-  "Run a bounded mini-debate with one neutral participant in this session"
+  "Run /mini-debate [--participant <name>] [--rounds <1-10>] <topic>"
 
 export type MiniDebatePluginOptions = {
   /**

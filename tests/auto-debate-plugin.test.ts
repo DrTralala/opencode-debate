@@ -16,6 +16,7 @@ type RecordValue = Record<string, unknown>
 const ownerA: Owner = { sessionID: "main-a", agent: "build", directory: "/automatic-debate-project" }
 const ownerB: Owner = { sessionID: "main-b", agent: "build", directory: "/automatic-debate-project" }
 const panel = ["one", "two", "three"] as const
+const transcriptDate = new Date().toISOString().slice(0, 10)
 const registry: DebateRegistry = {
   participants: panel.map((agent) => ({ agent, description: `Participant ${agent}`, model: `fake/${agent}`,
     ...(agent === "one" ? { variant: "careful" } : {}) })),
@@ -31,6 +32,11 @@ const brief = {
   alternatives: ["A", "B"],
   uncertainty: "Failure behaviour is not known.",
   neededOutcome: "A recommendation",
+}
+
+function automaticTranscriptPath(question: string): string {
+  const slug = question.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "")
+  return `docs/debates/auto-${transcriptDate}-${slug}.md`
 }
 
 function response(data: unknown) { return { data } }
@@ -184,7 +190,7 @@ function fakeInput(directory = ownerA.directory, voteToStop = true) {
 }
 
 async function privateRevision(fake: ReturnType<typeof fakeInput>, owner: Owner = ownerA, revision = 1) {
-  const file = join(fake.stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(fake.projectID, owner),
+  const file = join(fake.stateRoot, "opencode-debate", privateOwnerKey(fake.projectID, owner),
     `${String(revision).padStart(16, "0")}.json`)
   const envelope = JSON.parse(await readFile(file, "utf8")) as { payload: string }
   return JSON.parse(envelope.payload) as RecordValue
@@ -413,6 +419,11 @@ test("debate-auto controls are exact, session-scoped, persisted, and do not disp
   const malformed = await command(ownerA, "on extra")
   assert.match(JSON.stringify(malformed.parts), /Invalid automatic debate control command/)
   assert.match(JSON.stringify(malformed.parts), /Do not start a debate just to answer this command\./)
+
+  for (const removed of ["storage status", "storage migrate", "storage delete-source"]) {
+    const unavailable = await command(ownerA, removed)
+    assert.match(JSON.stringify(unavailable.parts), /Invalid automatic debate control command/, removed)
+  }
 })
 
 test("off and reset controls persist across plugin recreation without participant work", async () => {
@@ -704,7 +715,7 @@ test("discussion-specific status retains the brief and findings after restart wh
   assert.equal((discussion.canonicalFindings as RecordValue[]).length, 6)
   assert.equal((discussion.result as RecordValue).rounds, 2)
   assert.equal(discussion.transcriptPath, undefined)
-  assert.equal(existsSync(join(ownerA.directory, "docs", "debates", `auto-${id}.md`)), false)
+  assert.equal(existsSync(join(ownerA.directory, automaticTranscriptPath(brief.question))), false)
   await restarted.dispose?.()
 })
 
@@ -786,7 +797,7 @@ test("discussion-specific audit after restart reports a saved transcript", async
     async () => JSON.parse(outputText(await execute(fake.hooks, { action: "status", discussion_id: id }, owner))) as RecordValue,
     (value) => (value.discussion as RecordValue | undefined)?.status === "awaiting-evaluation",
   )
-  const transcriptPath = `docs/debates/auto-${id}.md`
+  const transcriptPath = automaticTranscriptPath(brief.question)
   assert.equal(existsSync(join(projectDirectory, transcriptPath)), true)
   await waitFor(async () => fake.calls, (calls) => calls.some((call) => call.method === "session.promptAsync"))
   await fake.hooks.dispose?.()

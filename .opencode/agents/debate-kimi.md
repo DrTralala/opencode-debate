@@ -2,7 +2,7 @@
 description: Neutral debate participant from Moonshot AI
 mode: subagent
 hidden: true
-model: commandcode/moonshotai/Kimi-K3
+model: commandcode/moonshotai/Kimi-K3.1-Pro
 variant: max
 permission:
   "*": "deny"

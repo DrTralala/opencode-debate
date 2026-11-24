@@ -258,11 +258,11 @@ test("default set when --set absent", () => {
   }
 })
 
-test("--set:cheap sets the participant set", () => {
-  const r = parseDebateArguments("--set:cheap compare two options")
+test("--set:alt sets the participant set", () => {
+  const r = parseDebateArguments("--set:alt compare two options")
   assert.equal(r.ok, true)
   if (r.ok) {
-    assert.equal(r.set, "cheap")
+    assert.equal(r.set, "alt")
     assert.equal(r.topic, "compare two options")
     assert.equal(r.rounds, 3)
   }
@@ -274,22 +274,22 @@ test("--set:default sets the set explicitly", () => {
   if (r.ok) assert.equal(r.set, "default")
 })
 
-test("--set:cheap combines with --rounds", () => {
-  const r = parseDebateArguments("--rounds 5 --set:cheap compare two options")
+test("--set:alt combines with --rounds", () => {
+  const r = parseDebateArguments("--rounds 5 --set:alt compare two options")
   assert.equal(r.ok, true)
   if (r.ok) {
     assert.equal(r.rounds, 5)
-    assert.equal(r.set, "cheap")
+    assert.equal(r.set, "alt")
     assert.equal(r.topic, "compare two options")
   }
 })
 
 test("--set order does not matter", () => {
-  const r = parseDebateArguments("--set:cheap --rounds 5 compare two options")
+  const r = parseDebateArguments("--set:alt --rounds 5 compare two options")
   assert.equal(r.ok, true)
   if (r.ok) {
     assert.equal(r.rounds, 5)
-    assert.equal(r.set, "cheap")
+    assert.equal(r.set, "alt")
   }
 })
 
@@ -317,7 +317,7 @@ test("set errors list the dynamically configured choices", () => {
   if (!result.ok) {
     assert.match(result.error, /--set:default/)
     assert.match(result.error, /--set:custom/)
-    assert.doesNotMatch(result.error, /--set:cheap/)
+    assert.doesNotMatch(result.error, /--set:alt/)
   }
 })
 
@@ -350,32 +350,32 @@ test("bare --set is rejected as an unsupported option", () => {
 })
 
 test("duplicate --set is rejected", () => {
-  const r = parseDebateArguments("--set:cheap --set:default compare two options")
+  const r = parseDebateArguments("--set:alt --set:default compare two options")
   assert.equal(r.ok, false)
   if (!r.ok) assert.match(r.error, /only be specified once/)
 })
 
 test("--set after the first topic token is part of the topic", () => {
-  const r = parseDebateArguments("review --set:cheap in the topic")
+  const r = parseDebateArguments("review --set:alt in the topic")
   assert.equal(r.ok, true)
   if (r.ok) {
     assert.equal(r.set, "default")
-    assert.equal(r.topic, "review --set:cheap in the topic")
+    assert.equal(r.topic, "review --set:alt in the topic")
   }
 })
 
-test("-- separator treats --set:cheap as part of the topic", () => {
-  const r = parseDebateArguments("-- --set:cheap not an option")
+test("-- separator treats --set:alt as part of the topic", () => {
+  const r = parseDebateArguments("-- --set:alt not an option")
   assert.equal(r.ok, true)
   if (r.ok) {
     assert.equal(r.set, "default")
-    assert.equal(r.topic, "--set:cheap not an option")
+    assert.equal(r.topic, "--set:alt not an option")
   }
 })
 
-test("validPrompt emits the cheap participant set", () => {
-  const p = validPrompt("my topic", 5, "cheap", "abc123")
-  assert.match(p, /Participant set: cheap/)
+test("validPrompt emits the alt participant set", () => {
+  const p = validPrompt("my topic", 5, "alt", "abc123")
+  assert.match(p, /Participant set: alt/)
   assert.match(p, /Participant 1: debate-glm/)
   assert.match(p, /Participant 2: debate-qwen/)
   assert.match(p, /Participant 3: debate-openai/)
@@ -465,9 +465,9 @@ test("debate agent consumes resolved participants without owning set order", () 
   assert.match(prompt, /Resolved participants/)
   assert.match(prompt, /Participant 1`, `Participant 2`, and `Participant 3` from the parsed request/)
   assert.doesNotMatch(prompt, /`default` set: `Participant 1` uses the `debate-/)
-  assert.doesNotMatch(prompt, /`cheap` set: `Participant 1` uses the `debate-/)
+  assert.doesNotMatch(prompt, /`alt` set: `Participant 1` uses the `debate-/)
   assert.doesNotMatch(prompt, /`default` → `debate-/)
-  assert.doesNotMatch(prompt, /`cheap` → `debate-/)
+  assert.doesNotMatch(prompt, /`alt` → `debate-/)
 })
 
 test("static and plugin participant prompts are identical", () => {

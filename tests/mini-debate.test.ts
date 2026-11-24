@@ -90,7 +90,7 @@ test("command flags override the configured participant and rounds", () => {
     ...REGISTRY,
     miniDebate: { enabled: true, participant: "three", maxRounds: 7 },
   }
-  const parsed = parseMiniDebateArguments("--participant:one --rounds 2 A topic", configured)
+  const parsed = parseMiniDebateArguments("--participant one --rounds 2 A topic", configured)
 
   assert.deepEqual(parsed, {
     ok: true,
@@ -101,12 +101,22 @@ test("command flags override the configured participant and rounds", () => {
 })
 
 test("the published example resolves participant, rounds and topic", () => {
-  const parsed = parseMiniDebateArguments("--participant:two --rounds 5 A topic", REGISTRY)
+  const parsed = parseMiniDebateArguments("--participant two --rounds 5 A topic", REGISTRY)
 
   assert.equal(parsed.ok, true)
   if (parsed.ok) {
     assert.equal(parsed.participant.agent, "two")
     assert.equal(parsed.rounds, 5)
+    assert.equal(parsed.topic, "A topic")
+  }
+})
+
+test("the legacy colon participant option remains supported", () => {
+  const parsed = parseMiniDebateArguments("--participant:two A topic", REGISTRY)
+
+  assert.equal(parsed.ok, true)
+  if (parsed.ok) {
+    assert.equal(parsed.participant.agent, "two")
     assert.equal(parsed.topic, "A topic")
   }
 })
@@ -144,6 +154,8 @@ test("duplicate options fail", () => {
     ["--rounds 2 --rounds 5 A topic", /only be specified once/],
     ["--rounds=2 --rounds=5 A topic", /only be specified once/],
     ["--participant:one --participant:two A topic", /only be specified once/],
+    ["--participant one --participant two A topic", /only be specified once/],
+    ["--participant:one --participant two A topic", /only be specified once/],
   ] as const) {
     const parsed = parseMiniDebateArguments(args, REGISTRY)
 
@@ -152,12 +164,16 @@ test("duplicate options fail", () => {
   }
 })
 
-test("unknown, inherited, empty and bare participant options fail", () => {
+test("unknown, inherited and missing participant values fail", () => {
   for (const [args, expected] of [
+    ["--participant missing A topic", /Unsupported --participant value/],
+    ["--participant toString A topic", /Unsupported --participant value/],
     ["--participant:missing A topic", /Unsupported --participant value/],
     ["--participant:toString A topic", /Unsupported --participant value/],
+    ["--participant", /requires a value/],
+    ["--participant --rounds 5 A topic", /requires a value/],
+    ["--participant -- A topic", /requires a value/],
     ["--participant: A topic", /requires a value/],
-    ["--participant two A topic", /Unsupported option/],
   ] as const) {
     const parsed = parseMiniDebateArguments(args, REGISTRY)
 
@@ -188,7 +204,17 @@ test("unknown options fail with actionable errors", () => {
   assert.equal(parsed.ok, false)
   if (!parsed.ok) {
     assert.match(parsed.error, /Unsupported option/)
-    assert.match(parsed.error, /--participant:one/)
+    assert.match(parsed.error, /--participant one/)
+    assert.match(parsed.error, /--rounds <positive-integer>/)
+  }
+})
+
+test("topic-required help shows the space-separated participant syntax", () => {
+  const parsed = parseMiniDebateArguments("--participant two --rounds 5", REGISTRY)
+
+  assert.equal(parsed.ok, false)
+  if (!parsed.ok) {
+    assert.match(parsed.error, /\/mini-debate \[--participant <name>\] \[--rounds <1-10>\] <topic>/)
   }
 })
 

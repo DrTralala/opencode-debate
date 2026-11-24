@@ -22,7 +22,8 @@ import { checkpointTranscript, renderTranscript, saveTranscript } from "../src/a
 import type { Discussion } from "../src/auto-debate/types.ts"
 
 const discussionID = "86a8f47d-4d7c-4e34-90a2-c29bf67551f4"
-const transcriptFilename = `auto-${discussionID}.md`
+const transcriptDate = new Date().toISOString().slice(0, 10)
+const transcriptFilename = `auto-${transcriptDate}-which-approach-should-we-take.md`
 const transcriptPath = `docs/debates/${transcriptFilename}`
 
 function temporaryProject(): string {
@@ -73,6 +74,119 @@ test("disabled transcript persistence creates no docs directory", async () => {
 
     assert.equal(await saveTranscript(current), undefined)
     assert.equal(existsSync(join(project, "docs")), false)
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("new automatic transcripts use the UTC date and a safe question slug", async () => {
+  const project = temporaryProject()
+  try {
+    const current = discussion(project)
+
+    assert.equal(await saveTranscript(current), transcriptPath)
+    assert.equal(existsSync(join(project, "docs", "debates", transcriptFilename)), true)
+
+    const unsafeQuestion = discussion(project, {
+      id: "a6a8f47d-4d7c-4e34-90a2-c29bf67551f5",
+      brief: {
+        question: "../Should C++ / Rust win?",
+        objective: "Choose a safe approach.",
+        facts: [], assumptions: [], constraints: [], alternatives: [],
+        uncertainty: "The load is not known.",
+        neededOutcome: "A recommendation with caveats.",
+      },
+    })
+    assert.equal(await saveTranscript(unsafeQuestion), `docs/debates/auto-${transcriptDate}-should-c-rust-win.md`)
+    assert.equal(existsSync(join(project, "outside.md")), false)
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("question slugs ending in numbers remain stable across checkpoints", async () => {
+  const project = temporaryProject()
+  try {
+    const current = discussion(project, {
+      brief: {
+        question: "Should we choose plan 2?",
+        objective: "Choose a safe approach.",
+        facts: [], assumptions: [], constraints: [], alternatives: [],
+        uncertainty: "The load is not known.",
+        neededOutcome: "A recommendation with caveats.",
+      },
+    })
+    const expectedPath = `docs/debates/auto-${transcriptDate}-should-we-choose-plan-2.md`
+    await checkpointTranscript(current)
+    assert.equal(current.transcriptPath, expectedPath)
+
+    current.pendingTurns = [firstTurn("The numbered-plan checkpoint remains stable.")]
+    await checkpointTranscript(current)
+
+    assert.equal(current.transcriptPath, expectedPath)
+    assert.match(readFileSync(join(project, expectedPath), "utf8"), /numbered-plan checkpoint remains stable/u)
+    assert.equal(readdirSync(join(project, "docs", "debates")).filter((name) => name.endsWith(".md")).length, 1)
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("same-question discussions claim numeric collision suffixes without replacing earlier records", async () => {
+  const project = temporaryProject()
+  try {
+    const first = discussion(project)
+    const second = discussion(project, { id: "a6a8f47d-4d7c-4e34-90a2-c29bf67551f5" })
+    const third = discussion(project, { id: "b6a8f47d-4d7c-4e34-90a2-c29bf67551f6" })
+    const firstPath = join(project, "docs", "debates", transcriptFilename)
+    assert.equal(await saveTranscript(first), transcriptPath)
+    const firstContent = readFileSync(firstPath)
+
+    assert.equal(await saveTranscript(second), `docs/debates/auto-${transcriptDate}-which-approach-should-we-take-2.md`)
+    assert.equal(await saveTranscript(third), `docs/debates/auto-${transcriptDate}-which-approach-should-we-take-3.md`)
+    assert.deepEqual(readFileSync(firstPath), firstContent)
+    assert.deepEqual(readdirSync(join(project, "docs", "debates")).filter((name) => name.endsWith(".md")).sort(), [
+      transcriptFilename,
+      `auto-${transcriptDate}-which-approach-should-we-take-2.md`,
+      `auto-${transcriptDate}-which-approach-should-we-take-3.md`,
+    ].sort())
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("a resumed discussion without saved path metadata reuses its dated transcript", async () => {
+  const project = temporaryProject()
+  try {
+    const initial = discussion(project)
+    const currentPath = join(project, "docs", "debates", transcriptFilename)
+    const resumedFilename = "auto-2025-12-31-which-approach-should-we-take.md"
+    const resumedPath = join(project, "docs", "debates", resumedFilename)
+    assert.equal(await saveTranscript(initial), transcriptPath)
+    renameSync(currentPath, resumedPath)
+
+    const resumed = discussion(project, { pendingTurns: [firstTurn("Saved after a later resume.")] })
+    assert.equal(await saveTranscript(resumed), `docs/debates/${resumedFilename}`)
+    assert.equal(readdirSync(join(project, "docs", "debates")).filter((name) => name.endsWith(".md")).length, 1)
+    assert.match(readFileSync(resumedPath, "utf8"), /Saved after a later resume\./u)
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("legacy UUID transcript names remain appendable without being replaced", async () => {
+  const project = temporaryProject()
+  try {
+    const initial = discussion(project)
+    const currentPath = join(project, "docs", "debates", transcriptFilename)
+    const legacyFilename = `auto-${discussionID}.md`
+    const legacyPath = join(project, "docs", "debates", legacyFilename)
+    assert.equal(await saveTranscript(initial), transcriptPath)
+    renameSync(currentPath, legacyPath)
+
+    const resumed = discussion(project, { pendingTurns: [firstTurn("Legacy record was resumed.")] })
+    assert.equal(await saveTranscript(resumed), `docs/debates/${legacyFilename}`)
+    assert.equal(readdirSync(join(project, "docs", "debates")).filter((name) => name.endsWith(".md")).length, 1)
+    assert.match(readFileSync(legacyPath, "utf8"), /Legacy record was resumed\./u)
   } finally {
     rmSync(project, { recursive: true, force: true })
   }
@@ -508,7 +622,7 @@ test("a failed first-write directory sync cannot retain a link to a replacement"
   }
 })
 
-test("existing unrelated transcript collisions are refused without overwrite", async () => {
+test("existing unrelated transcript collisions use a numeric suffix without overwrite", async () => {
   const project = temporaryProject()
   try {
     const directory = join(project, "docs", "debates")
@@ -516,8 +630,21 @@ test("existing unrelated transcript collisions are refused without overwrite", a
     const path = join(directory, transcriptFilename)
     writeFileSync(path, "unrelated manual record\n", { mode: 0o600 })
 
-    await assert.rejects(saveTranscript(discussion(project)), /existing|owner marker|ownership|collision/i)
+    assert.equal(await saveTranscript(discussion(project)), `docs/debates/auto-${transcriptDate}-which-approach-should-we-take-2.md`)
     assert.equal(readFileSync(path, "utf8"), "unrelated manual record\n")
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test("a persisted transcript path cannot redirect writes outside docs/debates", async () => {
+  const project = temporaryProject()
+  try {
+    const current = discussion(project, { transcriptPath: "../../escaped.md" })
+
+    await assert.rejects(saveTranscript(current), /transcript path|path.*invalid|canonical/i)
+    assert.equal(existsSync(join(project, "escaped.md")), false)
+    assert.equal(existsSync(join(project, "docs")), false)
   } finally {
     rmSync(project, { recursive: true, force: true })
   }
@@ -561,6 +688,7 @@ test("updates reject a missing or altered ownership marker", async () => {
     const current = discussion(project)
     const path = await saveTranscript(current)
     assert.equal(typeof path, "string")
+    current.transcriptPath = path
     const absolutePath = join(project, "docs", "debates", transcriptFilename)
     writeFileSync(absolutePath, "replacement by another writer\n", { mode: 0o600 })
 

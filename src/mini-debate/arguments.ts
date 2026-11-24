@@ -9,8 +9,8 @@ const DEFAULT_ROUNDS = 3
 const MAX_ROUNDS = 10
 
 function participantUsage(participants: readonly DebateParticipant[]): string {
-  const choices = participants.map(({ agent }) => `--participant:${agent}`)
-  if (choices.length === 0) return "--participant:<name>"
+  const choices = participants.map(({ agent }) => `--participant ${agent}`)
+  if (choices.length === 0) return "--participant <name>"
   if (choices.length === 1) return choices[0]
   return `${choices.slice(0, -1).join(", ")} or ${choices.at(-1)}`
 }
@@ -18,7 +18,7 @@ function participantUsage(participants: readonly DebateParticipant[]): string {
 function topicRequired(): ParsedMiniDebateArguments {
   return {
     ok: false,
-    error: "A topic is required: use /mini-debate [--participant:<name>] [--rounds <1-10>] <topic>.",
+    error: "A topic is required: use /mini-debate [--participant <name>] [--rounds <1-10>] <topic>.",
   }
 }
 
@@ -87,6 +87,28 @@ export function parseMiniDebateArguments(
       }
       rounds = num
       roundsSeen = true
+      continue
+    }
+
+    if (token === "--participant") {
+      while (index < args.length && /\s/.test(args[index])) index++
+      if (index >= args.length) {
+        return { ok: false, error: `--participant requires a value: use ${usage}.` }
+      }
+      const valueStart = index
+      while (index < args.length && !/\s/.test(args[index])) index++
+      const value = args.slice(valueStart, index)
+      if (value.startsWith("--")) {
+        return { ok: false, error: `--participant requires a value: use ${usage}.` }
+      }
+      if (!registry.participants.some((item) => item.agent === value)) {
+        return { ok: false, error: `Unsupported --participant value: ${value}. Use ${usage}.` }
+      }
+      if (participantSeen) {
+        return { ok: false, error: "--participant may only be specified once." }
+      }
+      participantID = value
+      participantSeen = true
       continue
     }
 

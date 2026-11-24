@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { lstat, open, readdir, readFile, rmdir, unlink } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import type { PluginInput } from "@opencode-ai/plugin"
@@ -10,25 +9,15 @@ import {
   type RefusedInvocation,
 } from "./checkpoint.ts"
 import {
-  migrationBoundaryPath,
   openPrivateStore,
-  planPrivateRevision,
   privateOwnerKey,
   privateStoreRoot,
-  readMigrationBoundary,
-  writeMigrationBoundary,
   type PrivateHead,
   type PrivateStore,
 } from "./private-store.ts"
 import type {
   CheckpointSnapshot,
-  ConversationState,
-  Discussion,
-  LegacySource,
-  MigrationBoundary,
   Owner,
-  PanelMember,
-  RuntimeReceipt,
   StorageSelection,
 } from "./types.ts"
 import { journalView, parseConversationState, parseRuntimeJournal } from "./validation.ts"
@@ -63,103 +52,9 @@ export interface CompactionMaintenance {
   compactIfEligible(owner: Owner, predicate: (snapshot: CheckpointSnapshot) => boolean): Promise<CompactionResult>
 }
 
-export type MigrationPreview = Readonly<{
-  ownerSessionID: string
-  agent: string
-  source: LegacySource
-  lifecycle: readonly { discussionID: string; status: Discussion["status"] }[]
-  intended: { backend: "private"; privateRevision: 1; boundary: "prepared" }
-  token: string
-  command: string
-}>
-
-export type MigrationResult = Readonly<{
-  source: LegacySource
-  privateRevision: number
-  privateDigest: string
-}>
-
-export type SourceDeletionPreview = Readonly<{
-  source: LegacySource
-  private: { revision: number; digest: string }
-  token: string
-  command: string
-}>
-
-export type StorageState = Readonly<{
-  platform: "linux" | "other"
-  selected: "native" | "private" | "new-private" | "conflict" | "unsupported"
-  migration: "none" | "prepared" | "committed" | "retiring" | "retired" | "conflict"
-  nativeStoreID?: string
-  privateRevision?: number
-  compactionEligible: boolean
-  issues: readonly string[]
-}>
-
-export type QuiescentStart = {
-  open: Extract<RuntimeReceipt, { kind: "participant-start-open" }>
-  closed?: Extract<RuntimeReceipt, { kind: "participant-start-closed" }>
-}
-
-export type ParticipantQuiescenceVerifier = (
-  owner: Owner,
-  member: PanelMember,
-  proof: Extract<RuntimeReceipt, { kind: "member-bound" }>,
-  starts: readonly QuiescentStart[],
-) => Promise<{ exhausted: boolean; reason?: string }>
-
 export interface StoreMaintenance extends CompactionMaintenance {
-  migrationPreview(owner: Owner): Promise<MigrationPreview>
-  migrate(owner: Owner, token: string): Promise<MigrationResult>
-  sourceDeletionPreview(owner: Owner): Promise<SourceDeletionPreview>
-  deleteSource(owner: Owner, storeID: string, token: string): Promise<void>
   reconcileDeletedOwner(sessionID: string): Promise<void>
   reconcileOrphanedStores(): Promise<void>
-  status(owner: Owner): Promise<StorageState>
-}
-
-export function migrationToken(input: {
-  project: string
-  owner: Owner
-  source: LegacySource
-}): string {
-  return createHash("sha256").update(JSON.stringify([
-    "opencode-debate/migrate/v1",
-    input.project,
-    resolve(input.owner.directory),
-    input.owner.sessionID,
-    input.owner.agent,
-    input.source.storeID,
-    input.source.revision,
-    input.source.head,
-    input.source.digest,
-  ])).digest("hex")
-}
-
-export function sourceDeletionToken(input: {
-  project: string
-  owner: Owner
-  source: LegacySource
-  boundaryToken: string
-  boundaryPrivate: { revision: number; digest: string }
-  private: { revision: number; digest: string }
-}): string {
-  return createHash("sha256").update(JSON.stringify([
-    "opencode-debate/delete-source/v1",
-    input.project,
-    resolve(input.owner.directory),
-    input.owner.sessionID,
-    input.owner.agent,
-    input.source.storeID,
-    input.source.revision,
-    input.source.head,
-    input.source.digest,
-    input.boundaryToken,
-    input.boundaryPrivate.revision,
-    input.boundaryPrivate.digest,
-    input.private.revision,
-    input.private.digest,
-  ])).digest("hex")
 }
 
 export type MaintenanceFailureStage = "preflight" | "publication"
@@ -183,7 +78,6 @@ export interface ManagedCheckpointStore {
   load(owner: Owner, invocation?: CurrentInvocation): Promise<CheckpointSnapshot | undefined>
   save(owner: Owner, snapshot: CheckpointSnapshot, context: { agent: string; model: Model }, invocation?: CurrentInvocation): Promise<void>
   noteOwnerDeleted(sessionID: string): void
-  noteOwnerDeletionRetained(sessionID: string): void
   maintenance: StoreMaintenance
 }
 
@@ -291,77 +185,21 @@ export function isCompactionEligible(snapshot: CheckpointSnapshot): boolean {
   }
 }
 
-function compareSource(left: MigrationBoundary["source"], right: NativeCheckpointHead): boolean {
-  return left.storeID === right.storeID && left.revision === right.revision
-    && left.head === right.head && left.digest === right.digest
-}
-
-function sameSource(left: LegacySource, right: LegacySource): boolean {
-  return left.storeID === right.storeID && left.revision === right.revision
-    && left.head === right.head && left.digest === right.digest
-}
-
-function samePrivate(left: MigrationBoundary["private"], right: MigrationBoundary["private"]): boolean {
-  return left.revision === right.revision && left.digest === right.digest
-}
-
-/** The private chain must carry the exact imported native source and never sit
- * below the boundary's import floor. At the floor its digest is the boundary digest;
- * later revisions are trusted only because Task 1 verified the predecessor chain and
- * preserved `legacy` unchanged. */
-function migratedPrivateHead(boundary: MigrationBoundary, privateHead: PrivateHead): boolean {
-  if (!privateHead.legacy || !sameSource(boundary.source, privateHead.legacy)) return false
-  if (privateHead.revision < boundary.private.revision) return false
-  return privateHead.revision !== boundary.private.revision || privateHead.digest === boundary.private.digest
-}
-
-/**
- * Pure backend decision. Non-Linux never consults private state and only fails
- * closed for a native child carrying a Linux migration marker.
- */
+/** Native checkpoint state stays native; a prior migration marker must never
+ * make its source resumable after migration support has been removed. */
 export function selectStorageBackend(platform: NodeJS.Platform, inventory: {
   native?: NativeCheckpointHead
   private?: PrivateHead
-  boundary?: MigrationBoundary
 }): StorageSelection {
   const native = inventory.native
   const privateHead = inventory.private
-  const boundary = inventory.boundary
-
+  if (native?.migration) return { kind: "conflict", reason: "linux-migration-marker" }
   if (platform !== "linux") {
-    if (native?.migration) return { kind: "conflict", reason: "linux-migration-marker" }
     return { kind: "native" }
   }
-
-  if (!boundary) {
-    if (!native) return privateHead ? { kind: "private" } : { kind: "new-private" }
-    if (native.migration) return { kind: "conflict", reason: "linux-migration-marker" }
-    return privateHead ? { kind: "conflict", reason: "native-and-private" } : { kind: "native" }
-  }
-
-  if (boundary.state === "prepared") return { kind: "conflict", reason: "boundary-prepared" }
-  if (boundary.state === "retiring") return { kind: "conflict", reason: "boundary-retiring" }
-
-  if (boundary.state === "committed") {
-    if (!native || !privateHead) return { kind: "conflict", reason: "boundary-source-missing" }
-    const marker = native.migration
-    if (!marker) return { kind: "conflict", reason: "migration-marker-missing" }
-    if (!compareSource(boundary.source, native) || !sameSource(boundary.source, marker.source)
-      || !samePrivate(boundary.private, marker.private) || boundary.token !== marker.token) {
-      return { kind: "conflict", reason: "boundary-source-mismatch" }
-    }
-    if (!migratedPrivateHead(boundary, privateHead)) {
-      return { kind: "conflict", reason: "private-source-mismatch" }
-    }
-    return { kind: "private" }
-  }
-
-  if (native) return { kind: "conflict", reason: "native-source-reappeared" }
-  if (!privateHead) return { kind: "conflict", reason: "private-state-missing" }
-  if (!migratedPrivateHead(boundary, privateHead)) {
-    return { kind: "conflict", reason: "private-source-mismatch" }
-  }
-  return { kind: "private" }
+  if (native && privateHead) return { kind: "conflict", reason: "native-and-private" }
+  if (native) return { kind: "native" }
+  return privateHead ? { kind: "private" } : { kind: "new-private" }
 }
 
 type Resolution = {
@@ -423,7 +261,6 @@ export function createManagedStore(
   input: PluginInput,
   mode: RuntimeStorageMode,
   retainedRefusals: (owner: Owner) => readonly RefusedInvocation[] = () => [],
-  quiescence?: ParticipantQuiescenceVerifier,
 ): ManagedCheckpointStore {
   const native: NativeCheckpointStore = createCheckpointStore(input, parseConversationState, retainedRefusals)
   const privateStores = new Map<string, Promise<PrivateStore>>()
@@ -431,24 +268,8 @@ export function createManagedStore(
   const maintenanceRuns = new Set<string>()
   const maintenancePublicationStarted = new Set<string>()
   const deletedOwners = new Set<string>()
-  const ownerIssues = new Map<string, Set<string>>()
-  const orphanIssues = new Set<string>()
   let stateRoot: string | undefined
   let cleanupTail: Promise<void> = Promise.resolve()
-
-  function recordOwnerIssue(sessionID: string, issue: string): void {
-    const existing = ownerIssues.get(sessionID) ?? new Set<string>()
-    existing.add(issue)
-    ownerIssues.set(sessionID, existing)
-  }
-
-  function recordOrphanIssue(issue: string): void {
-    orphanIssues.add(issue)
-  }
-
-  function issuesFor(sessionID: string): string[] {
-    return [...new Set([...(ownerIssues.get(sessionID) ?? []), ...orphanIssues])]
-  }
 
   async function resolveStateRoot(): Promise<string> {
     if (stateRoot !== undefined) return stateRoot
@@ -566,16 +387,9 @@ export function createManagedStore(
     return "present"
   }
 
-  function incompleteBoundary(boundary: MigrationBoundary | undefined): boolean {
-    return boundary?.state === "prepared" || boundary?.state === "retiring"
-  }
-
-  async function removeOwnerArtifacts(root: string, owner: Owner, key: string, hasHead: boolean): Promise<void> {
-    let current = resolve(root)
-    for (const component of ["opencode-debate", "auto-debate", "v2"]) {
-      current = join(current, component)
-      assertRemovalDirectory(await lstat(current), "plugin directory")
-    }
+  async function removeOwnerArtifacts(root: string, key: string, hasHead: boolean): Promise<void> {
+    const current = join(resolve(root), "opencode-debate")
+    assertRemovalDirectory(await lstat(current), "plugin directory")
     const ownerDirectory = join(current, key)
     assertRemovalDirectory(await lstat(ownerDirectory), "owner directory")
 
@@ -591,107 +405,23 @@ export function createManagedStore(
     }
     if (hasHead && revisions === 0) throw new Error("owner directory lost its committed revision")
 
-    const boundaryPath = migrationBoundaryPath(root, input.project.id, owner)
-    let boundaryExists = false
-    try {
-      assertRemovalFile(await lstat(boundaryPath), "migration boundary")
-      boundaryExists = true
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error
-    }
-
     for (const path of files) await unlink(path)
     await syncRemovalDirectory(ownerDirectory)
     await rmdir(ownerDirectory)
     await syncRemovalDirectory(current)
-    if (boundaryExists) {
-      const migrations = join(current, "migrations")
-      assertRemovalDirectory(await lstat(migrations), "migration directory")
-      await unlink(boundaryPath)
-      await syncRemovalDirectory(migrations)
-    }
-  }
-
-  async function readOwnerFromBoundary(root: string, key: string): Promise<Owner | undefined> {
-    const path = join(privateStoreRoot(root), "migrations", `${key}.json`)
-    let stats
-    try {
-      stats = await lstat(path)
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return undefined
-      throw error
-    }
-    assertRemovalFile(stats, "migration boundary")
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(await readFile(path, "utf8")) as unknown
-    } catch {
-      throw new Error("migration boundary is invalid")
-    }
-    if (!isRecord(envelope) || typeof envelope.payload !== "string") throw new Error("migration boundary is invalid")
-    let payload: unknown
-    try {
-      payload = JSON.parse(envelope.payload) as unknown
-    } catch {
-      throw new Error("migration boundary is invalid")
-    }
-    if (!isRecord(payload) || payload.kind !== "opencode-debate-migration-boundary" || payload.version !== 1
-      || typeof payload.project !== "string" || typeof payload.directory !== "string"
-      || typeof payload.owner !== "string" || typeof payload.agent !== "string") {
-      throw new Error("migration boundary is invalid")
-    }
-    const owner: Owner = {
-      sessionID: payload.owner,
-      agent: payload.agent,
-      directory: resolve(payload.directory),
-    }
-    if (payload.project !== input.project.id || owner.directory !== resolve(input.directory)) return undefined
-    if (privateOwnerKey(input.project.id, owner) !== key) throw new Error("migration boundary binding is invalid")
-    const boundary = await readMigrationBoundary(root, input.project.id, owner)
-    if (!boundary) throw new Error("migration boundary is missing")
-    return owner
-  }
-
-  async function removeBoundaryOnly(root: string, owner: Owner, key: string): Promise<void> {
-    let current = resolve(root)
-    for (const component of ["opencode-debate", "auto-debate", "v2"]) {
-      current = join(current, component)
-      assertRemovalDirectory(await lstat(current), "plugin directory")
-    }
-    try {
-      await lstat(join(current, key))
-      throw new Error("owner directory still exists")
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error
-    }
-    const boundary = await readMigrationBoundary(root, input.project.id, owner)
-    if (!boundary) return
-    if (incompleteBoundary(boundary)) throw new Error("owner migration is incomplete")
-    const migrations = join(current, "migrations")
-    assertRemovalDirectory(await lstat(migrations), "migration directory")
-    const path = migrationBoundaryPath(root, input.project.id, owner)
-    assertRemovalFile(await lstat(path), "migration boundary")
-    await unlink(path)
-    await syncRemovalDirectory(migrations)
   }
 
   async function removeSafeOwner(root: string, owner: Owner, key: string): Promise<void> {
-    const boundary = await readMigrationBoundary(root, input.project.id, owner)
-    if (incompleteBoundary(boundary)) throw new Error("owner migration is incomplete")
     const store = await openPrivateStore({ stateRoot: root, project: input.project.id, owner })
     const head = await store.load()
     if (!head) throw new Error("owner store has no committed head")
     if (!isOwnerRemovalSafe(head)) throw new Error("owner store retains unresolved evidence")
-    await removeOwnerArtifacts(root, owner, key, true)
+    await removeOwnerArtifacts(root, key, true)
   }
 
   async function reconcileTarget(root: string, sessionID: string, key: string): Promise<void> {
     const presence = await parentPresence(sessionID)
-    if (presence === "present") return
-    if (presence === "unknown") {
-      recordOwnerIssue(sessionID, "parent session absence could not be proven")
-      return
-    }
+    if (presence !== "absent") return
     const directory = join(privateStoreRoot(root), key)
     let inspection: OwnerDirectoryInspection
     try {
@@ -699,49 +429,21 @@ export function createManagedStore(
       assertRemovalDirectory(stats, "owner directory")
       inspection = await inspectOwnerDirectory(directory, key)
     } catch (error) {
-      if (errorCode(error) === "ENOENT") {
-        // A previous cleanup may have removed the owner directory but stopped
-        // before its outside-revision boundary. Complete only that exact remnant.
-        try {
-          const boundaryOwner = await readOwnerFromBoundary(root, key)
-          if (!boundaryOwner) return
-          if (boundaryOwner.sessionID !== sessionID) {
-            recordOwnerIssue(sessionID, "migration boundary binding does not match the deleted parent")
-            return
-          }
-          await removeBoundaryOnly(root, boundaryOwner, key)
-          ownerIssues.delete(sessionID)
-        } catch {
-          recordOwnerIssue(sessionID, "migration boundary cleanup could not be completed safely")
-        }
-        return
-      }
-      recordOwnerIssue(sessionID, "owner store could not be inspected")
+      if (errorCode(error) === "ENOENT") return
       return
     }
 
     try {
-      if (inspection.kind === "other") {
-        recordOwnerIssue(sessionID, "owner store binding is outside this project and directory")
-        return
-      }
-      if (inspection.kind === "no-head") {
+      if (inspection.kind !== "owner") {
         // An empty or pending-only directory can also be a lost committed
         // revision. There is no private head to prove removal safety, so retain
-        // it as evidence; only an already-complete boundary with no owner
-        // directory is treated as the boundary-only remnant above.
-        recordOwnerIssue(sessionID, "owner store has no committed head; retained for inspection")
+        // it as evidence rather than treating it as an unused store.
         return
-      } else {
-        if (inspection.owner.sessionID !== sessionID) {
-          recordOwnerIssue(sessionID, "owner store binding does not match the deleted parent")
-          return
-        }
-        await removeSafeOwner(root, inspection.owner, key)
       }
-      ownerIssues.delete(sessionID)
+      if (inspection.owner.sessionID !== sessionID) return
+      await removeSafeOwner(root, inspection.owner, key)
     } catch {
-      recordOwnerIssue(sessionID, "owner store cleanup could not be completed safely")
+      // Unknown, corrupt or incomplete deletion evidence is retained.
     }
   }
 
@@ -749,8 +451,8 @@ export function createManagedStore(
     if (mode === "native") return { selection: { kind: "native" } }
     if (process.platform !== "linux") {
       const probe = await native.probe(owner)
-      // Only storeID/migration are meaningful for the non-Linux decision; private
-      // state and the API state path are never consulted on this branch.
+      // Non-Linux remains native-only. A retained Linux migration marker is
+      // refusal evidence, not authority to continue from the native source.
       const nativeHead = probe === undefined ? undefined : {
         storeID: probe.storeID,
         revision: 0,
@@ -765,59 +467,27 @@ export function createManagedStore(
     const root = await resolveStateRoot()
     const store = await privateStore(owner, root)
     const privateHead = await store.load()
-    const boundary = await readMigrationBoundary(root, input.project.id, owner)
-
     if (!privateHead) {
       const nativeHead = await native.inspect(owner, invocation)
       return {
-        selection: selectStorageBackend(process.platform, {
-          ...(nativeHead === undefined ? {} : { native: nativeHead }),
-          ...(boundary === undefined ? {} : { boundary }),
-        }),
+        selection: selectStorageBackend(process.platform, nativeHead ? { native: nativeHead } : {}),
         privateStore: store,
       }
     }
 
     const probe = await native.probe(owner)
-    if (boundary?.state === "committed") {
-      if (!probe) {
-        return {
-          selection: selectStorageBackend(process.platform, {
-            private: privateHead,
-            boundary,
-          }),
-          privateHead,
-          privateStore: store,
-        }
-      }
-      const nativeHead = await native.inspect(owner, invocation)
-      return {
-        selection: selectStorageBackend(process.platform, {
-          ...(nativeHead === undefined ? {} : { native: nativeHead }),
-          private: privateHead,
-          boundary,
-        }),
-        privateHead,
-        privateStore: store,
-      }
-    }
-    if (boundary?.state === "retired") {
-      if (probe) return { selection: { kind: "conflict", reason: "native-source-reappeared" }, privateHead, privateStore: store }
-      return { selection: selectStorageBackend(process.platform, { private: privateHead, boundary }),
-        privateHead, privateStore: store }
-    }
-    if (boundary) {
-      return { selection: { kind: "conflict", reason: `boundary-${boundary.state}` }, privateHead, privateStore: store }
-    }
-    if (probe) {
-      return {
-        selection: { kind: "conflict", reason: probe.migration ? "linux-migration-marker" : "native-and-private" },
-        privateHead,
-        privateStore: store,
-      }
-    }
     return {
-      selection: selectStorageBackend(process.platform, { private: privateHead }),
+      selection: selectStorageBackend(process.platform, {
+        private: privateHead,
+        ...(probe === undefined ? {} : { native: {
+          storeID: probe.storeID,
+          revision: 0,
+          head: "",
+          digest: "",
+          snapshot: { state: { version: 1 as const, discussions: [], outbox: [] } },
+          ...(probe.migration === undefined ? {} : { migration: probe.migration }),
+        } }),
+      }),
       privateHead,
       privateStore: store,
     }
@@ -825,306 +495,6 @@ export function createManagedStore(
 
   function privateSelection(selection: StorageSelection): boolean {
     return selection.kind === "private" || selection.kind === "new-private"
-  }
-
-  function sourceOf(head: NativeCheckpointHead): LegacySource {
-    return { storeID: head.storeID, revision: head.revision, head: head.head, digest: head.digest }
-  }
-
-  function boundaryFor(owner: Owner, source: LegacySource, privatePlan: { revision: number; digest: string },
-    token: string, state: MigrationBoundary["state"]): MigrationBoundary {
-    return {
-      kind: "opencode-debate-migration-boundary",
-      version: 1,
-      state,
-      project: input.project.id,
-      directory: resolve(owner.directory),
-      owner: owner.sessionID,
-      agent: owner.agent,
-      source: { ...source },
-      private: { revision: privatePlan.revision, digest: privatePlan.digest },
-      token,
-    }
-  }
-
-  function assertPlannedPrivate(head: PrivateHead, planned: { digest: string; snapshot: CheckpointSnapshot },
-    source: LegacySource): void {
-    if (head.revision !== 1 || head.digest !== planned.digest || !head.legacy
-      || !sameSource(head.legacy, source)
-      || JSON.stringify(head.snapshot) !== JSON.stringify(planned.snapshot)) {
-      fail("private migration evidence diverged from the native source; both sides are retained")
-    }
-  }
-
-  function assertMarker(marker: NativeCheckpointHead["migration"], source: LegacySource, plannedDigest: string,
-    token: string): void {
-    if (!marker || !sameSource(marker.source, source) || marker.private.revision !== 1
-      || marker.private.digest !== plannedDigest || marker.token !== token) {
-      fail("native migration marker conflicts with the planned private import")
-    }
-  }
-
-  async function assertMigrationQuiescent(
-    owner: Owner,
-    snapshot: CheckpointSnapshot,
-  ): Promise<readonly { discussionID: string; status: Discussion["status"] }[]> {
-    const state = parseConversationState(snapshot.state)
-    const proof = snapshot.runtimeProof === undefined
-      ? undefined : parseRuntimeJournal(snapshot.runtimeProof, state)
-    if (state.discussions.length > 0 && !proof) {
-      fail("migration requires complete runtime receipt evidence for every discussion")
-    }
-    const view = journalView(proof)
-    for (const discussion of state.discussions) {
-      if (discussion.status !== "paused" && discussion.status !== "resolved" && discussion.status !== "cancelled") {
-        fail(`discussion ${discussion.id} is ${discussion.status}; migration requires paused, resolved or cancelled state`)
-      }
-      if (discussion.pendingTurns.length > 0) fail(`discussion ${discussion.id} has pending turns`)
-      if ((discussion.deliveryUncertainCycles?.length ?? 0) > 0) {
-        fail(`discussion ${discussion.id} has delivery uncertainty`)
-      }
-      if (discussion.status === "cancelled" && !discussion.cancellation) {
-        fail(`cancelled discussion ${discussion.id} lacks cancellation evidence`)
-      }
-      if (discussion.cancellation && (discussion.cancellation.pendingSessionIDs.length > 0
-        || discussion.cancellation.errors.length > 0)) {
-        fail(`discussion ${discussion.id} has unresolved cancellation evidence`)
-      }
-      for (const panelMember of discussion.panel) {
-        const origin = view.members.get(panelMember.sessionID)
-        if (!origin || origin.origin.discussionID !== discussion.id
-          || JSON.stringify(origin.origin.member) !== JSON.stringify(panelMember)) {
-          fail(`discussion ${discussion.id} lacks an exact member-bound receipt`)
-        }
-        if (origin.fenced && !origin.confirmed) {
-          fail(`participant ${panelMember.sessionID} has unconfirmed cessation evidence`)
-        }
-        if (discussion.status === "cancelled" && (!origin.fenced || !origin.confirmed)) {
-          fail(`participant ${panelMember.sessionID} has unconfirmed cancellation cessation evidence`)
-        }
-        for (const start of origin.starts.values()) {
-          if (!start.closed) fail(`participant ${panelMember.sessionID} has an unclosed startup`)
-        }
-        if (!quiescence) fail("participant quiescence cannot be verified")
-        const result = await quiescence(owner, panelMember, origin.origin, [...origin.starts.values()])
-        if (!result.exhausted) {
-          fail(`participant ${panelMember.sessionID} is not quiescent: ${result.reason ?? "unknown evidence"}`)
-        }
-      }
-    }
-    for (const item of state.outbox) {
-      if (item.state !== "acknowledged") fail(`outbox item ${item.id} is not acknowledged`)
-    }
-    for (const delivery of view.deliveries.values()) {
-      if (!delivery.persisted || delivery.noCall || delivery.attempt === undefined) {
-        fail(`delivery ${delivery.intent.delivery.id} is not settled`)
-      }
-    }
-    return state.discussions.map((discussion) => ({ discussionID: discussion.id, status: discussion.status }))
-  }
-
-  type MigrationPlan = {
-    kind: "new" | "marker-only" | "prepared"
-    source: LegacySource
-    lifecycle: readonly { discussionID: string; status: Discussion["status"] }[]
-    token: string
-    planned: ReturnType<typeof planPrivateRevision>
-    privateHead?: PrivateHead
-    boundary?: MigrationBoundary
-    nativeHead: NativeCheckpointHead
-    store: PrivateStore
-  }
-
-  function preparedMigrationEvidence(
-    owner: Owner,
-    root: string,
-    boundary: MigrationBoundary,
-    nativeHead: NativeCheckpointHead,
-  ): { source: LegacySource; token: string; planned: ReturnType<typeof planPrivateRevision> } {
-    if (boundary.state !== "prepared") {
-      fail(`migration boundary is ${boundary.state}; no prepared migration retry is available`)
-    }
-    const source = sourceOf(nativeHead)
-    if (!sameSource(boundary.source, source)) fail("prepared migration source changed")
-    const expectedToken = migrationToken({ project: input.project.id, owner, source })
-    if (boundary.token !== expectedToken) fail("prepared migration token does not match its source")
-    assertMarker(nativeHead.migration, source, boundary.private.digest, boundary.token)
-    const planned = planPrivateRevision({
-      stateRoot: root,
-      project: input.project.id,
-      owner,
-      revision: 1,
-      previous: null,
-      snapshot: nativeHead.snapshot,
-      legacy: source,
-    })
-    if (planned.digest !== boundary.private.digest) {
-      fail("prepared migration private digest diverged from the native source")
-    }
-    return { source, token: boundary.token, planned }
-  }
-
-  async function migrationPlan(owner: Owner): Promise<MigrationPlan> {
-    const root = await resolveStateRoot()
-    let store = await privateStore(owner, root)
-    let privateHead: PrivateHead | undefined
-    let boundary: MigrationBoundary | undefined
-    let nativeHead: NativeCheckpointHead | undefined
-    try {
-      privateHead = await store.load()
-    } catch (loadError) {
-      // Ordinary new-owner failures remain closed. Only an exact prepared
-      // boundary with a fresh, matching native source/marker/token may inspect an
-      // interrupted first publish through a narrowly scoped recovery store.
-      boundary = await readMigrationBoundary(root, input.project.id, owner)
-      nativeHead = await native.inspect(owner)
-      if (boundary?.state !== "prepared" || !nativeHead) throw loadError
-      const evidence = preparedMigrationEvidence(owner, root, boundary, nativeHead)
-      const recoveryStore = await openPrivateStore({
-        stateRoot: root,
-        project: input.project.id,
-        owner,
-        recovery: {
-          revision: 1,
-          digest: evidence.planned.digest,
-          legacy: evidence.source,
-          snapshot: evidence.planned.snapshot,
-        },
-      })
-      privateHead = await recoveryStore.load()
-      const pending = privateStores.get(owner.sessionID)
-      if (pending && await pending.catch(() => undefined) === store) privateStores.delete(owner.sessionID)
-      store = recoveryStore
-    }
-
-    if (boundary === undefined && nativeHead === undefined) {
-      boundary = await readMigrationBoundary(root, input.project.id, owner)
-      nativeHead = await native.inspect(owner)
-    }
-
-    if (boundary) {
-      if (!nativeHead) fail("prepared migration source is missing")
-      const evidence = preparedMigrationEvidence(owner, root, boundary, nativeHead)
-      if (privateHead) assertPlannedPrivate(privateHead, evidence.planned, evidence.source)
-      const lifecycle = await assertMigrationQuiescent(owner, nativeHead.snapshot)
-      return {
-        kind: "prepared",
-        source: evidence.source,
-        lifecycle,
-        token: evidence.token,
-        planned: evidence.planned,
-        ...(privateHead === undefined ? {} : { privateHead }),
-        boundary,
-        nativeHead,
-        store,
-      }
-    }
-
-    if (!nativeHead) {
-      if (privateHead) fail("owner is already using private storage; no migration is required")
-      fail("owner has no native checkpoint to migrate and is already on private storage")
-    }
-    const source = sourceOf(nativeHead)
-    const computedToken = migrationToken({ project: input.project.id, owner, source })
-    const marker = nativeHead.migration
-    if (!marker && privateHead) {
-      fail("native and private checkpoint stores both exist without migration evidence")
-    }
-    const planned = planPrivateRevision({
-      stateRoot: root,
-      project: input.project.id,
-      owner,
-      revision: 1,
-      previous: null,
-      snapshot: nativeHead.snapshot,
-      legacy: source,
-    })
-    let kind: MigrationPlan["kind"]
-    let token: string
-    if (marker) {
-      if (!sameSource(marker.source, source)) {
-        fail("native migration marker conflicts with the current source")
-      }
-      assertMarker(marker, source, planned.digest, marker.token)
-      if (marker.token !== computedToken) fail("native migration marker token does not match its source")
-      if (privateHead) assertPlannedPrivate(privateHead, planned, source)
-      kind = "marker-only"
-      token = marker.token
-    } else {
-      kind = "new"
-      token = computedToken
-    }
-    const lifecycle = await assertMigrationQuiescent(owner, nativeHead.snapshot)
-    return {
-      kind,
-      source,
-      lifecycle,
-      token,
-      planned,
-      ...(privateHead === undefined ? {} : { privateHead }),
-      nativeHead,
-      store,
-    }
-  }
-
-  type SourceDeletionPlan = {
-    root: string
-    store: PrivateStore
-    privateHead: PrivateHead
-    boundary: MigrationBoundary
-    source: LegacySource
-    token: string
-    nativeHead?: NativeCheckpointHead
-  }
-
-  async function sourceDeletionPlan(owner: Owner): Promise<SourceDeletionPlan> {
-    const root = await resolveStateRoot()
-    const store = await privateStore(owner, root)
-    const privateHead = await store.load()
-    if (!privateHead) fail("source deletion requires a committed private checkpoint")
-    const boundary = await readMigrationBoundary(root, input.project.id, owner)
-    if (!boundary) fail("source deletion requires a committed migration boundary")
-    if (boundary.state === "retired") fail("migration source is already marked retired")
-    if (boundary.state !== "committed" && boundary.state !== "retiring") {
-      fail(`source deletion requires a committed migration, not ${boundary.state}`)
-    }
-    if (!migratedPrivateHead(boundary, privateHead)) {
-      fail("private migration evidence does not match the source-deletion boundary")
-    }
-    const nativeHead = await native.inspectExact(owner, boundary.source.storeID)
-    if (nativeHead) {
-      const nativeSource = sourceOf(nativeHead)
-      if (!sameSource(nativeSource, boundary.source)) fail("native source changed before deletion")
-      assertMarker(nativeHead.migration, boundary.source, boundary.private.digest, boundary.token)
-    } else if (boundary.state === "committed") {
-      fail("committed migration source is missing; deletion requires an explicit retiring retry")
-    }
-    const token = sourceDeletionToken({
-      project: input.project.id,
-      owner,
-      source: boundary.source,
-      boundaryToken: boundary.token,
-      boundaryPrivate: boundary.private,
-      private: { revision: privateHead.revision, digest: privateHead.digest },
-    })
-    return {
-      root,
-      store,
-      privateHead,
-      boundary,
-      source: boundary.source,
-      token,
-      ...(nativeHead === undefined ? {} : { nativeHead }),
-    }
-  }
-
-  async function writeBoundaryVerified(root: string, owner: Owner, boundary: MigrationBoundary): Promise<MigrationBoundary> {
-    await writeMigrationBoundary(root, boundary)
-    const readBack = await readMigrationBoundary(root, input.project.id, owner)
-    if (!readBack || JSON.stringify(readBack) !== JSON.stringify(boundary)) {
-      fail("migration boundary did not verify after publication")
-    }
-    return readBack
   }
 
   return {
@@ -1158,12 +528,6 @@ export function createManagedStore(
 
     noteOwnerDeleted: (sessionID) => {
       if (typeof sessionID === "string" && sessionID.trim().length > 0) deletedOwners.add(sessionID)
-    },
-
-    noteOwnerDeletionRetained: (sessionID) => {
-      if (typeof sessionID === "string" && sessionID.trim().length > 0) {
-        recordOwnerIssue(sessionID, "deletion containment or write evidence is unconfirmed")
-      }
     },
 
     save: async (owner, snapshot, context, invocation) => {
@@ -1204,141 +568,12 @@ export function createManagedStore(
       }
 
       const head = current
-        ? await store.append({ revision: current.revision, digest: current.digest }, snapshot, current.legacy)
+        ? await store.append({ revision: current.revision, digest: current.digest }, snapshot)
         : await store.append({ revision: 0, digest: null }, snapshot)
       privateHeads.set(owner.sessionID, { revision: head.revision, digest: head.digest })
     },
 
     maintenance: {
-      migrationPreview: async (owner) => {
-        if (mode === "native") fail("migration preview is unavailable in explicit native mode")
-        if (process.platform !== "linux") fail("storage maintenance is supported only on Linux")
-        const plan = await migrationPlan(owner)
-        return {
-          ownerSessionID: owner.sessionID,
-          agent: owner.agent,
-          source: { ...plan.source },
-          lifecycle: plan.lifecycle.map((entry) => ({ ...entry })),
-          intended: { backend: "private", privateRevision: 1, boundary: "prepared" },
-          token: plan.token,
-          command: `storage migrate ${plan.token} --writer-handover-confirmed`,
-        } satisfies MigrationPreview
-      },
-
-      migrate: async (owner, token) => {
-        try {
-          if (mode === "native") fail("migration is unavailable in explicit native mode")
-          if (process.platform !== "linux") fail("storage maintenance is supported only on Linux")
-          if (typeof token !== "string" || !/^[a-f0-9]{64}$/u.test(token)) fail("migration token is invalid")
-          const plan = await migrationPlan(owner)
-          if (token !== plan.token) fail("migration token is stale or does not match the current source")
-
-          let marker = plan.nativeHead.migration
-          if (!marker) {
-            marker = {
-              kind: "opencode-debate-migrated",
-              version: 1,
-              privateOwnerKey: privateOwnerKey(input.project.id, owner),
-              source: { ...plan.source },
-              private: { revision: 1, digest: plan.planned.digest },
-              token: plan.token,
-            }
-            await native.markMigrated(owner, marker, plan.source)
-            const readBack = await native.inspect(owner)
-            if (!readBack?.migration || JSON.stringify(readBack.migration) !== JSON.stringify(marker)
-              || !sameSource(sourceOf(readBack), plan.source)) {
-              fail("native migration marker did not verify after publication")
-            }
-          } else {
-            assertMarker(marker, plan.source, plan.planned.digest, plan.token)
-          }
-
-          const root = await resolveStateRoot()
-          let boundary = plan.boundary
-          if (!boundary) {
-            boundary = await writeBoundaryVerified(root, owner, boundaryFor(
-              owner,
-              plan.source,
-              { revision: 1, digest: plan.planned.digest },
-              plan.token,
-              "prepared",
-            ))
-          } else if (boundary.state !== "prepared") {
-            fail(`migration boundary is ${boundary.state}; no prepared retry is available`)
-          }
-
-          let currentNative = await native.inspect(owner)
-          if (!currentNative || !sameSource(sourceOf(currentNative), plan.source)) {
-            fail("native source changed after the migration marker was written")
-          }
-
-          const store = plan.store
-          let privateHead = await store.load()
-          if (!privateHead) {
-            privateHead = await store.append({ revision: 0, digest: null }, plan.planned.snapshot, plan.source)
-            if (privateHead.revision !== 1 || privateHead.digest !== plan.planned.digest) {
-              fail("private migration import did not match the prepared digest")
-            }
-          } else {
-            assertPlannedPrivate(privateHead, plan.planned, plan.source)
-          }
-          const verified = await store.load()
-          if (!verified) fail("private migration import is missing after publication")
-          assertPlannedPrivate(verified, plan.planned, plan.source)
-
-          currentNative = await native.inspect(owner)
-          if (!currentNative || !sameSource(sourceOf(currentNative), plan.source)) {
-            fail("native source changed before the migration could commit")
-          }
-
-          const committed = await writeBoundaryVerified(root, owner, { ...boundary, state: "committed" })
-          if (committed.state !== "committed") fail("migration boundary did not commit")
-          privateHeads.set(owner.sessionID, { revision: verified.revision, digest: verified.digest })
-          return {
-            source: { ...plan.source },
-            privateRevision: verified.revision,
-            privateDigest: verified.digest,
-          }
-        } catch (error) {
-          // A failed private read/append poisons the cached Task 1 store instance.
-          // Retrying from a fresh instance revalidates any complete revision, which
-          // is safe while the maintenance/writer lock is still held.
-          privateStores.delete(owner.sessionID)
-          throw error
-        }
-      },
-
-      sourceDeletionPreview: async (owner) => {
-        if (mode === "native") fail("source deletion is unavailable in explicit native mode")
-        if (process.platform !== "linux") fail("storage maintenance is supported only on Linux")
-        const plan = await sourceDeletionPlan(owner)
-        return {
-          source: { ...plan.source },
-          private: { revision: plan.privateHead.revision, digest: plan.privateHead.digest },
-          token: plan.token,
-          command: `storage delete-source ${plan.source.storeID} ${plan.token}`,
-        } satisfies SourceDeletionPreview
-      },
-
-      deleteSource: async (owner, storeID, token) => {
-        if (mode === "native") fail("source deletion is unavailable in explicit native mode")
-        if (process.platform !== "linux") fail("storage maintenance is supported only on Linux")
-        if (typeof storeID !== "string" || storeID.length === 0) fail("an exact native store ID is required")
-        if (typeof token !== "string" || !/^[a-f0-9]{64}$/u.test(token)) fail("source deletion token is invalid")
-        const plan = await sourceDeletionPlan(owner)
-        if (storeID !== plan.source.storeID) fail("the supplied native store ID does not match the migration source")
-        if (token !== plan.token) fail("source deletion token is stale or does not match the current private head")
-        const root = await resolveStateRoot()
-        let boundary = plan.boundary
-        if (boundary.state === "committed") {
-          boundary = await writeBoundaryVerified(root, owner, { ...boundary, state: "retiring" })
-        }
-        if (boundary.state !== "retiring") fail("source deletion intent is not durable")
-        await native.delete(owner, plan.source)
-        const retired = await writeBoundaryVerified(root, owner, { ...boundary, state: "retired" })
-        if (retired.state !== "retired") fail("source deletion did not retire the migration boundary")
-      },
-
       reconcileDeletedOwner: async (sessionID) => {
         if (typeof sessionID !== "string" || sessionID.trim().length === 0) return
         // The tombstone is synchronous and precedes the queue so a concurrent save
@@ -1350,7 +585,6 @@ export function createManagedStore(
           try {
             root = await resolveStateRoot()
           } catch {
-            recordOwnerIssue(sessionID, "storage path is unavailable")
             return
           }
           // The owner key binds the current project and directory; agent is not part
@@ -1370,7 +604,6 @@ export function createManagedStore(
         try {
           root = await resolveStateRoot()
         } catch {
-          recordOrphanIssue("orphan reconciliation could not resolve the storage path")
           return
         }
         let entries
@@ -1378,7 +611,6 @@ export function createManagedStore(
           entries = await readdir(privateStoreRoot(root))
         } catch (error) {
           if (errorCode(error) === "ENOENT") return
-          recordOrphanIssue("orphan reconciliation could not inspect the storage root")
           return
         }
         for (const name of entries) {
@@ -1389,136 +621,18 @@ export function createManagedStore(
             assertRemovalDirectory(await lstat(directory), "owner directory")
             inspection = await inspectOwnerDirectory(directory, name)
           } catch {
-            recordOrphanIssue("an owner store could not be inspected")
             continue
           }
-          if (inspection.kind === "no-head") {
-            let ownerSessionID: string | undefined
-            try {
-              ownerSessionID = (await readOwnerFromBoundary(root, name))?.sessionID
-            } catch {
-              // The directory itself is retained; report without content.
-            }
-            if (ownerSessionID) {
-              recordOwnerIssue(ownerSessionID, "owner store has no committed head; retained for inspection")
-            } else {
-              recordOrphanIssue("an owner store without a committed head was retained")
-            }
-            continue
-          }
+          if (inspection.kind === "no-head") continue
           if (inspection.kind !== "owner") continue
           const sessionID = inspection.owner.sessionID
           const presence = await parentPresence(sessionID)
-          if (presence === "present") continue
-          if (presence === "unknown") {
-            recordOwnerIssue(sessionID, "parent session absence could not be proven")
-            continue
-          }
+          if (presence !== "absent") continue
           try {
             await removeSafeOwner(root, inspection.owner, name)
-            ownerIssues.delete(sessionID)
-          } catch {
-            recordOwnerIssue(sessionID, "owner store cleanup could not be completed safely")
-          }
-        }
-
-        let boundaryEntries: string[]
-        try {
-          boundaryEntries = await readdir(join(privateStoreRoot(root), "migrations"))
-        } catch (error) {
-          if (errorCode(error) !== "ENOENT") {
-            recordOrphanIssue("orphan migration boundaries could not be inspected")
-          }
-          return
-        }
-        for (const name of boundaryEntries) {
-          if (!/^[a-f0-9]{64}\.json$/u.test(name)) continue
-          const key = name.slice(0, -5)
-          try {
-            const owner = await readOwnerFromBoundary(root, key)
-            if (!owner) continue
-            try {
-              await lstat(join(privateStoreRoot(root), key))
-              continue // The owner-directory pass owns this store.
-            } catch (error) {
-              if (errorCode(error) !== "ENOENT") throw error
-            }
-            const presence = await parentPresence(owner.sessionID)
-            if (presence === "present") continue
-            if (presence === "unknown") {
-              recordOwnerIssue(owner.sessionID, "parent session absence could not be proven")
-              continue
-            }
-            await removeBoundaryOnly(root, owner, key)
-            ownerIssues.delete(owner.sessionID)
-          } catch {
-            recordOrphanIssue("an orphan migration boundary could not be completed safely")
-          }
+          } catch { /* Unknown or corrupt deletion evidence is retained. */ }
         }
       }),
-
-      status: async (owner) => {
-        const platform = process.platform === "linux" ? "linux" as const : "other" as const
-        if (mode === "native") {
-          return { platform, selected: "native", migration: "none", compactionEligible: false, issues: [] }
-        }
-        if (platform === "other") {
-          const probe = await native.probe(owner)
-          return {
-            platform,
-            selected: probe?.migration ? "conflict" : "native",
-            migration: probe?.migration ? "conflict" : "none",
-            compactionEligible: false,
-            issues: [
-              ...(probe?.migration ? ["linux migration marker is not supported on this platform"] : []),
-              ...issuesFor(owner.sessionID),
-            ],
-          }
-        }
-        try {
-          const root = await resolveStateRoot()
-          const store = await privateStore(owner, root)
-          const privateHead = await store.load()
-          const boundary = await readMigrationBoundary(root, input.project.id, owner)
-          const probe = await native.probe(owner)
-          // A retired/committed private owner may retain unrelated participant
-          // children; absence evidence must not turn a valid private selection
-          // into a conflict just because those children are not checkpoint stores.
-          const nativeHead = probe !== undefined || privateHead === undefined
-            ? await native.inspect(owner)
-            : undefined
-          const selection = selectStorageBackend(platform, {
-            ...(nativeHead === undefined ? {} : { native: nativeHead }),
-            ...(privateHead === undefined ? {} : { private: privateHead }),
-            ...(boundary === undefined ? {} : { boundary }),
-          })
-          const selected: StorageState["selected"] = selection.kind === "none" ? "unsupported" : selection.kind
-          return {
-            platform,
-            selected,
-            migration: boundary?.state ?? (nativeHead?.migration ? "conflict" : "none"),
-            ...(nativeHead === undefined ? {} : { nativeStoreID: nativeHead.storeID }),
-            ...(privateHead === undefined ? {} : { privateRevision: privateHead.revision }),
-            compactionEligible: selection.kind === "private" && privateHead !== undefined
-              && isCompactionEligible(privateHead.snapshot),
-            issues: [
-              ...(selection.kind === "conflict" ? [selection.reason] : []),
-              ...issuesFor(owner.sessionID),
-            ],
-          }
-        } catch (error) {
-          return {
-            platform,
-            selected: "conflict",
-            migration: "conflict",
-            compactionEligible: false,
-            issues: [
-              error instanceof Error ? error.message : "storage status is unavailable",
-              ...issuesFor(owner.sessionID),
-            ],
-          }
-        }
-      },
 
       compactIfEligible: async (owner, predicate) => {
         const sessionID = owner.sessionID

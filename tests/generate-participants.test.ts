@@ -11,9 +11,9 @@ import {
 } from "../scripts/gen-participants.ts"
 
 test("participant registry defines the supported sets", () => {
-  assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "cheap"])
+  assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "alt"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
-  assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-openai"])
+  assert.deepEqual(DEBATE_PARTICIPANT_SETS.alt, ["debate-glm", "debate-qwen", "debate-openai"])
 })
 
 test("participant registry contains metadata for every referenced agent", () => {
@@ -23,15 +23,14 @@ test("participant registry contains metadata for every referenced agent", () => 
   }
 })
 
-test("anthropic participant uses Claude Opus 5 through OpenRouter", () => {
-  const participant = DEBATE_PARTICIPANTS.find((entry) => entry.agent === "debate-anthropic")
-
-  assert.deepEqual(participant, {
-    agent: "debate-anthropic",
-    description: "Neutral debate participant from Anthropic",
-    model: "openrouter/anthropic/claude-opus-5",
-    variant: "high",
-  })
+test("shipped participant model pins match the supported routes and variants", () => {
+  assert.deepEqual(DEBATE_PARTICIPANTS.map(({ agent, model, variant }) => ({ agent, model, variant })), [
+    { agent: "debate-openai", model: "openai/gpt-6.2-astra", variant: "high" },
+    { agent: "debate-glm", model: "commandcode/zai-org/GLM-5.3", variant: "max" },
+    { agent: "debate-kimi", model: "commandcode/moonshotai/Kimi-K3.1-Pro", variant: "max" },
+    { agent: "debate-anthropic", model: "openrouter/anthropic/claude-opus-5.5", variant: "high" },
+    { agent: "debate-qwen", model: "commandcode/Qwen/Qwen3.8-Max-Prime", variant: undefined },
+  ])
 })
 
 test("renderParticipantAgent combines participant metadata with the shared body", () => {
@@ -41,7 +40,7 @@ test("renderParticipantAgent combines participant metadata with the shared body"
   const rendered = renderParticipantAgent(participant, "Shared participant instructions.\n")
 
   assert.match(rendered, /description: Neutral debate participant from OpenAI/)
-  assert.match(rendered, /model: openai\/gpt-6-astra/)
+  assert.match(rendered, /model: openai\/gpt-6\.2-astra/)
   assert.match(rendered, /variant: high/)
   assert.match(rendered, /^hidden: true$/m)
   assert.match(rendered, /permission:\n  "\*": "deny"/)
@@ -70,6 +69,10 @@ test("renderParticipantAgent omits variant when it is not configured", () => {
 
   assert.match(rendered, /model: provider\/model/)
   assert.doesNotMatch(rendered, /^variant:/m)
+})
+
+test("generated participant agent files are synchronised with the shipped registry", () => {
+  assert.deepEqual(checkParticipantAgents(), { changed: [] })
 })
 
 test("renderCoordinatorAgent replaces only coordinator task permissions", () => {

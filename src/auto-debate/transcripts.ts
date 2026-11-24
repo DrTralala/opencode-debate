@@ -9,6 +9,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
   writeSync,
 } from "node:fs"
@@ -24,6 +25,7 @@ const EVALUATION_NEXT = ["act", "investigate", "continue", "report-unresolved"] 
 const directoryOpenFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
 const fileWriteFlags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
 const fileAppendFlags = constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW
+const MAX_QUESTION_SLUG_LENGTH = 80
 
 type StatIdentity = { dev: number; ino: number }
 type TranscriptDirectories = {
@@ -61,8 +63,53 @@ class TranscriptPathUnavailableError extends Error {
   }
 }
 
+class TranscriptNameCollisionError extends Error {
+  constructor() {
+    super("Automatic transcript filename was claimed by another writer")
+    this.name = "TranscriptNameCollisionError"
+  }
+}
+
 function failPathUnavailable(message: string): never {
   throw new TranscriptPathUnavailableError(`destination path is unavailable: ${message}`)
+}
+
+function questionSlug(question: string): string {
+  const value = question.normalize("NFKD").replace(/[\u0300-\u036f]/gu, "").toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "")
+    .slice(0, MAX_QUESTION_SLUG_LENGTH).replace(/-+$/gu, "")
+  return value || "question"
+}
+
+function utcDate(): string {
+  const value = new Date()
+  if (Number.isNaN(value.getTime())) fail("current date is invalid")
+  return value.toISOString().slice(0, 10)
+}
+
+function baseFilename(discussion: Discussion, date = utcDate()): string {
+  return `auto-${date}-${questionSlug(discussion.brief.question)}`
+}
+
+function storedFilename(discussion: Discussion, projectDirectory: string): string | undefined {
+  const value = discussion.transcriptPath
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || !value.startsWith("docs/debates/")) {
+    failPathUnavailable("stored transcript path is not a project-relative docs/debates path")
+  }
+  const filename = value.slice("docs/debates/".length)
+  const absolute = resolve(projectDirectory, value)
+  if (!filename || filename.includes("/") || savedPath(projectDirectory, absolute) !== value) {
+    failPathUnavailable("stored transcript path is not a canonical docs/debates filename")
+  }
+  if (filename === `auto-${discussion.id}.md`) return filename
+
+  const slug = questionSlug(discussion.brief.question)
+  const match = new RegExp(`^auto-(\\d{4}-\\d{2}-\\d{2})-${slug}(?:-(\\d+))?\\.md$`, "u").exec(filename)
+  if (!match || match[2] !== undefined && (Number(match[2]) < 2 || String(Number(match[2])) !== match[2])) {
+    failPathUnavailable("stored transcript filename does not match this discussion question")
+  }
+  return filename
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -762,14 +809,13 @@ function parseTranscriptContent(content: Buffer, discussion: Discussion): Transc
   return { events, nextSequence: sequence }
 }
 
-function openOwnedTranscript(path: string, discussion: Discussion): OpenTranscript | undefined {
+function openOwnedTranscript(path: string, discussion: Discussion, allowUnownedCollision = false): OpenTranscript | undefined {
   let current: ReturnType<typeof regularFileAt>
   try { current = regularFileAt(path, "destination") } catch (error) {
     if (error instanceof TranscriptPathUnavailableError) throw error
     failPathUnavailable(error instanceof Error ? error.message : "destination could not be inspected")
   }
   if (!current) return undefined
-  if (current.mode !== 0o600) failPathUnavailable("destination permissions are not the required owner-only 0600 mode")
   let descriptor: number | undefined
   try {
     descriptor = openSync(path, fileAppendFlags)
@@ -778,6 +824,13 @@ function openOwnedTranscript(path: string, discussion: Discussion): OpenTranscri
       failPathUnavailable("pathname changed while its descriptor was opened")
     }
     const content = readFileSync(descriptor)
+    if (!ownedHeader(content, discussion)) {
+      closeSync(descriptor)
+      descriptor = undefined
+      if (allowUnownedCollision) return undefined
+      failPathUnavailable("destination owner marker or framed transcript header does not match this discussion")
+    }
+    if (current.mode !== 0o600) failPathUnavailable("destination permissions are not the required owner-only 0600 mode")
     const log = parseTranscriptContent(content, discussion)
     return { descriptor, identity: current.identity, content, log }
   } catch (error) {
@@ -847,7 +900,7 @@ function writeNewTranscript(path: string, content: Buffer): StatIdentity {
   }
   if (operationError !== undefined) {
     if (errorCode(operationError) === "EEXIST") {
-      throw new TranscriptPathUnavailableError("Automatic transcript destination already exists without a verified framed record; refusing collision")
+      throw new TranscriptNameCollisionError()
     }
     throw new TranscriptPathUnavailableError(operationError instanceof Error
       ? `Automatic transcript exclusive first write was not verified: ${operationError.message}`
@@ -911,13 +964,129 @@ function savedPath(projectDirectory: string, destination: string): string {
   return relative(projectDirectory, destination).split(sep).join("/")
 }
 
+function ownedHeader(content: Buffer, discussion: Discussion): boolean {
+  const currentHeader = Buffer.from(transcriptHeader(discussion), "utf8")
+  const legacyHeader = Buffer.from(legacyTranscriptHeader(discussion), "utf8")
+  return content.subarray(0, currentHeader.length).equals(currentHeader)
+    || content.subarray(0, legacyHeader.length).equals(legacyHeader)
+}
+
+function hasOwnedHeader(path: string, discussion: Discussion): boolean {
+  const current = regularFileAt(path, "destination")
+  if (!current) return false
+  let descriptor: number | undefined
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const opened = fstatSync(descriptor)
+    if (!opened.isFile() || !sameIdentity(current.identity, identity(opened))) {
+      failPathUnavailable("pathname changed while its candidate header was read")
+    }
+    return ownedHeader(readFileSync(descriptor), discussion)
+  } catch (error) {
+    if (error instanceof TranscriptPathUnavailableError) throw error
+    if (errorCode(error) === "ELOOP") return failPathUnavailable("destination must not be a symlink")
+    return failPathUnavailable(error instanceof Error ? error.message : "candidate header could not be read safely")
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+  }
+}
+
+function candidateTranscriptNames(directoryFD: number, discussion: Discussion): string[] {
+  const slug = questionSlug(discussion.brief.question)
+  const dated = new RegExp(`^auto-\\d{4}-\\d{2}-\\d{2}-${slug}(?:-(?:[2-9]|[1-9]\\d+))?\\.md$`, "u")
+  const legacy = `auto-${discussion.id}.md`
+  return readdirSync(descriptorPath(directoryFD)).filter((name) => name === legacy || dated.test(name))
+}
+
+function findOwnedTranscript(directories: TranscriptDirectories, discussion: Discussion): { filename: string; opened: OpenTranscript } | undefined {
+  let found: { filename: string; opened: OpenTranscript } | undefined
+  try {
+    for (const filename of candidateTranscriptNames(directories.debatesFD, discussion)) {
+      const path = descriptorPath(directories.debatesFD, filename)
+      if (!hasOwnedHeader(path, discussion)) continue
+      const opened = openOwnedTranscript(path, discussion)
+      if (!opened) continue
+      if (found) {
+        closeSync(found.opened.descriptor)
+        closeSync(opened.descriptor)
+        found = undefined
+        failPathUnavailable("multiple owned transcript paths match this discussion")
+      }
+      found = { filename, opened }
+    }
+    return found
+  } catch (error) {
+    if (found) closeSync(found.opened.descriptor)
+    throw error
+  }
+}
+
+function firstAvailableTranscript(directories: TranscriptDirectories, discussion: Discussion, base: string):
+  { filename: string; opened?: OpenTranscript } {
+  for (let suffix = 1; suffix < 2 ** 31; suffix++) {
+    const filename = `${base}${suffix === 1 ? "" : `-${suffix}`}.md`
+    const path = descriptorPath(directories.debatesFD, filename)
+    const current = regularFileAt(path, "destination")
+    if (!current) return { filename }
+    if (hasOwnedHeader(path, discussion)) {
+      const opened = openOwnedTranscript(path, discussion)
+      if (opened) return { filename, opened }
+    }
+  }
+  failPathUnavailable("transcript filename suffix space is exhausted")
+}
+
+function createInitialTranscript(path: string, discussion: Discussion, directories: TranscriptDirectories,
+  events: readonly TranscriptEvent[]): void {
+  const initial = Buffer.concat([
+    Buffer.from(transcriptHeader(discussion), "utf8"),
+    ...events.map((event, index) => encodeFrame(event, index + 1)),
+  ])
+  parseTranscriptContent(initial, discussion)
+  try {
+    const createdIdentity = writeNewTranscript(path, initial)
+    syncDirectory(directories.debatesFD)
+    verifyCanonicalDirectories(directories)
+    verifyDestinationIdentity(path, createdIdentity, "after its exclusive first write")
+    const created = openOwnedTranscript(path, discussion)
+    if (!created || !sameIdentity(created.identity, createdIdentity)) {
+      if (created) closeSync(created.descriptor)
+      failPathUnavailable("exclusive first write could not be verified as the owned framed record")
+    }
+    try {
+      verifyDestinationIdentity(path, createdIdentity, "after verifying its first frames")
+    } finally {
+      try { closeSync(created.descriptor) } catch (error) {
+        verifyDestinationIdentity(path, createdIdentity, "after closing the verification descriptor")
+        failPathUnavailable(error instanceof Error ? `could not close the first-record verification descriptor: ${error.message}`
+          : "could not close the first-record verification descriptor")
+      }
+    }
+  } catch (error) {
+    if (error instanceof TranscriptNameCollisionError) throw error
+    if (error instanceof TranscriptPathUnavailableError) throw error
+    failPathUnavailable(error instanceof Error ? `exclusive first record was not verified: ${error.message}`
+      : "exclusive first record was not verified")
+  }
+}
+
+function appendOwnedTranscript(path: string, discussion: Discussion, directories: TranscriptDirectories,
+  existing: OpenTranscript): void {
+  try {
+    appendEvents(path, discussion, directories, existing, appendableEvents(discussion, existing.log))
+  } finally {
+    closeSync(existing.descriptor)
+  }
+}
+
 export async function saveTranscript(discussion: Discussion): Promise<string | undefined> {
   if (isRecord(discussion) && isRecord(discussion.config) && discussion.config.persistTranscripts === false) return undefined
   const snapshot = structuredClone(discussion)
   assertDiscussion(snapshot)
   if (!snapshot.config.persistTranscripts) return undefined
   const projectDirectory = resolve(snapshot.owner.directory)
-  const filename = `auto-${snapshot.id}.md`
+  const requestedFilename = storedFilename(snapshot, projectDirectory)
+  const base = baseFilename(snapshot)
   const lockKey = JSON.stringify([projectDirectory, snapshot.id])
   return withDiscussionLock(lockKey, () => {
     const events = transcriptEvents(snapshot)
@@ -929,50 +1098,49 @@ export async function saveTranscript(discussion: Discussion): Promise<string | u
       }
       throw error
     }
-    const destination = descriptorPath(directories.debatesFD, filename)
     try {
       verifyCanonicalDirectories(directories)
-      const existingPath = regularFileAt(destination, "destination")
-      if (existingPath) {
+      if (requestedFilename !== undefined) {
+        const destination = descriptorPath(directories.debatesFD, requestedFilename)
         const existing = openOwnedTranscript(destination, snapshot)
-        if (!existing) failPathUnavailable("owned destination disappeared before it could be opened")
-        try {
-          appendEvents(destination, snapshot, directories, existing, appendableEvents(snapshot, existing.log))
-        } finally {
-          closeSync(existing.descriptor)
+        if (existing) {
+          appendOwnedTranscript(destination, snapshot, directories, existing)
+        } else {
+          try {
+            createInitialTranscript(destination, snapshot, directories, events)
+          } catch (error) {
+            if (!(error instanceof TranscriptNameCollisionError)) throw error
+            const claimed = openOwnedTranscript(destination, snapshot)
+            if (!claimed) failPathUnavailable("stored transcript path was claimed by an unrelated record")
+            appendOwnedTranscript(destination, snapshot, directories, claimed)
+          }
         }
       } else {
-        const initial = Buffer.concat([
-          Buffer.from(transcriptHeader(snapshot), "utf8"),
-          ...events.map((event, index) => encodeFrame(event, index + 1)),
-        ])
-        parseTranscriptContent(initial, snapshot)
-        try {
-          const createdIdentity = writeNewTranscript(destination, initial)
-          syncDirectory(directories.debatesFD)
-          verifyCanonicalDirectories(directories)
-          verifyDestinationIdentity(destination, createdIdentity, "after its exclusive first write")
-          const created = openOwnedTranscript(destination, snapshot)
-          if (!created || !sameIdentity(created.identity, createdIdentity)) {
-            if (created) closeSync(created.descriptor)
-            failPathUnavailable("exclusive first write could not be verified as the owned framed record")
+        let existing = findOwnedTranscript(directories, snapshot)
+        if (existing) {
+          appendOwnedTranscript(descriptorPath(directories.debatesFD, existing.filename), snapshot, directories, existing.opened)
+          return savedPath(projectDirectory, join(projectDirectory, "docs", "debates", existing.filename))
+        }
+        while (true) {
+          const available = firstAvailableTranscript(directories, snapshot, base)
+          if (available.opened) {
+            appendOwnedTranscript(descriptorPath(directories.debatesFD, available.filename), snapshot, directories, available.opened)
+            return savedPath(projectDirectory, join(projectDirectory, "docs", "debates", available.filename))
           }
           try {
-            verifyDestinationIdentity(destination, createdIdentity, "after verifying its first frames")
-          } finally {
-            try { closeSync(created.descriptor) } catch (error) {
-              verifyDestinationIdentity(destination, createdIdentity, "after closing the verification descriptor")
-              failPathUnavailable(error instanceof Error ? `could not close the first-record verification descriptor: ${error.message}`
-                : "could not close the first-record verification descriptor")
+            createInitialTranscript(descriptorPath(directories.debatesFD, available.filename), snapshot, directories, events)
+            return savedPath(projectDirectory, join(projectDirectory, "docs", "debates", available.filename))
+          } catch (error) {
+            if (!(error instanceof TranscriptNameCollisionError)) throw error
+            existing = findOwnedTranscript(directories, snapshot)
+            if (existing) {
+              appendOwnedTranscript(descriptorPath(directories.debatesFD, existing.filename), snapshot, directories, existing.opened)
+              return savedPath(projectDirectory, join(projectDirectory, "docs", "debates", existing.filename))
             }
           }
-        } catch (error) {
-          if (error instanceof TranscriptPathUnavailableError) throw error
-          failPathUnavailable(error instanceof Error ? `exclusive first record was not verified: ${error.message}`
-            : "exclusive first record was not verified")
         }
       }
-      return savedPath(projectDirectory, join(projectDirectory, "docs", "debates", filename))
+      return savedPath(projectDirectory, join(projectDirectory, "docs", "debates", requestedFilename!))
     } finally {
       closeDirectories(directories)
     }

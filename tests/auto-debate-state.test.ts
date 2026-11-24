@@ -152,6 +152,12 @@ test("control parsing rejects missing stop targets, extra arguments and unknown 
   }
 })
 
+test("storage management commands are not automatic-debate controls", () => {
+  for (const command of ["storage status", "storage migrate", "storage delete-source"]) {
+    assert.throws(() => parseControl(command), /invalid automatic debate control/i)
+  }
+})
+
 test("running discussions transition to awaiting evaluation before evaluation", () => {
   const running = discussion()
   const awaiting = awaitEvaluation(running)

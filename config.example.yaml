@@ -2,7 +2,7 @@ version: 2
 participants:
   debate-openai:
     description: Neutral debate participant from OpenAI
-    model: openai/gpt-6-astra
+    model: openai/gpt-6.2-astra
     variant: high
   debate-glm:
     description: Neutral debate participant from Z.ai
@@ -10,16 +10,15 @@ participants:
     variant: max
   debate-kimi:
     description: Neutral debate participant from Moonshot AI
-    model: commandcode/moonshotai/Kimi-K3
+    model: commandcode/moonshotai/Kimi-K3.1-Pro
     variant: max
   debate-anthropic:
     description: Neutral debate participant from Anthropic
-    model: openrouter/anthropic/claude-opus-5
+    model: openrouter/anthropic/claude-opus-5.5
     variant: high
   debate-qwen:
     description: Neutral debate participant from Alibaba
-    model: commandcode/Qwen/Qwen3.8-Max-0902
-    variant: xhigh
+    model: commandcode/Qwen/Qwen3.8-Max-Prime
 sets:
   default:
     default: yes
@@ -28,7 +27,7 @@ sets:
       - debate-kimi
       - debate-anthropic
       - debate-openai
-  cheap:
+  alt:
     continuation: ask
     participants:
       - debate-glm
@@ -37,7 +36,7 @@ sets:
 # Optional automatic-debate settings. Omit set to use the configured default set.
 auto_debate:
   enabled: true
-  set: cheap
+  set: alt
   # Total rounds across resumes. Use 0 only to allow unlimited rounds.
   max_rounds: 3
   persist_transcripts: true

@@ -77,7 +77,7 @@ test("packaged config.example.yaml preserves the shipped version 2 participant r
     participants: {
       "debate-openai": {
         description: "Neutral debate participant from OpenAI",
-        model: "openai/gpt-6-astra",
+        model: "openai/gpt-6.2-astra",
         variant: "high",
       },
       "debate-glm": {
@@ -87,18 +87,17 @@ test("packaged config.example.yaml preserves the shipped version 2 participant r
       },
       "debate-kimi": {
         description: "Neutral debate participant from Moonshot AI",
-        model: "commandcode/moonshotai/Kimi-K3",
+        model: "commandcode/moonshotai/Kimi-K3.1-Pro",
         variant: "max",
       },
       "debate-anthropic": {
         description: "Neutral debate participant from Anthropic",
-        model: "openrouter/anthropic/claude-opus-5",
+        model: "openrouter/anthropic/claude-opus-5.5",
         variant: "high",
       },
       "debate-qwen": {
         description: "Neutral debate participant from Alibaba",
-        model: "commandcode/Qwen/Qwen3.8-Max-0902",
-        variant: "xhigh",
+        model: "commandcode/Qwen/Qwen3.8-Max-Prime",
       },
     },
     sets: {
@@ -107,14 +106,14 @@ test("packaged config.example.yaml preserves the shipped version 2 participant r
         continuation: "ask",
         participants: ["debate-kimi", "debate-anthropic", "debate-openai"],
       },
-      cheap: {
+      alt: {
         continuation: "ask",
         participants: ["debate-glm", "debate-qwen", "debate-openai"],
       },
     },
     auto_debate: {
       enabled: true,
-      set: "cheap",
+      set: "alt",
       max_rounds: 3,
       persist_transcripts: true,
     },
@@ -127,11 +126,20 @@ test("packaged config.example.yaml preserves the shipped version 2 participant r
 })
 
 test("packaged compatibility exports are loaded from config.example.yaml", () => {
-  assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "cheap"])
+  assert.deepEqual(Object.keys(DEBATE_PARTICIPANT_SETS), ["default", "alt"])
   assert.deepEqual(DEBATE_PARTICIPANT_SETS.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
-  assert.deepEqual(DEBATE_PARTICIPANT_SETS.cheap, ["debate-glm", "debate-qwen", "debate-openai"])
+  assert.deepEqual(DEBATE_PARTICIPANT_SETS.alt, ["debate-glm", "debate-qwen", "debate-openai"])
   assert.equal(DEBATE_PARTICIPANTS.length, 5)
   assert.deepEqual(loadPackagedRegistry().miniDebate, { enabled: true, participant: "debate-glm", maxRounds: 5 })
+})
+
+test("shipped auto-debate selects alt without replacing the manual default set", () => {
+  const registry = loadPackagedRegistry()
+
+  assert.equal(registry.autoDebate?.set, "alt")
+  assert.equal(registry.defaultSet, "default")
+  assert.deepEqual(registry.sets.default, ["debate-kimi", "debate-anthropic", "debate-openai"])
+  assert.deepEqual(registry.sets.alt, ["debate-glm", "debate-qwen", "debate-openai"])
 })
 
 test("description and variant are optional source fields", () => {

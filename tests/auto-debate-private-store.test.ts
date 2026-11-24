@@ -101,7 +101,7 @@ test("private store publishes, syncs, reads back and reloads one revision", asyn
     assert.deepEqual(head.snapshot, initial)
     await store.close()
 
-    const ownerDirectory = join(stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(project, owner))
+    const ownerDirectory = join(stateRoot, "opencode-debate", privateOwnerKey(project, owner))
     const revisionPath = join(ownerDirectory, "0000000000000001.json")
     assert.equal((await stat(ownerDirectory)).mode & 0o777, 0o700)
     assert.equal((await stat(revisionPath)).mode & 0o777, 0o600)
@@ -136,10 +136,29 @@ test("queued append captures the caller snapshot and rejects a stale expected re
 })
 
 test("paths and owner keys are deterministic and exclude the agent", () => {
-  assert.equal(privateStoreRoot("/var/state"), join("/var/state", "opencode-debate", "auto-debate", "v2"))
+  assert.equal(privateStoreRoot("/var/state"), join("/var/state", "opencode-debate"))
   assert.equal(privateOwnerKey(project, owner), privateOwnerKey(project, { ...owner, agent: "other" }))
   assert.notEqual(privateOwnerKey(project, owner), privateOwnerKey("project-2", owner))
   assert.match(privateOwnerKey(project, owner), /^[a-f0-9]{64}$/)
+})
+
+test("the old v2 tree is ignored and left untouched by new private state", async () => {
+  await withRoot(async (stateRoot) => {
+    const oldDirectory = join(stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(project, owner))
+    await mkdir(oldDirectory, { recursive: true, mode: 0o700 })
+    const oldRevision = join(oldDirectory, "0000000000000001.json")
+    const oldContents = "old v2 data must not be read or changed"
+    await writeFile(oldRevision, oldContents, { mode: 0o600 })
+
+    const store = await openPrivateStore(optionsFor(stateRoot))
+    assert.equal(await store.load(), undefined)
+    assert.equal((await store.append({ revision: 0, digest: null }, initial)).revision, 1)
+    await store.close()
+
+    assert.equal(await readFile(oldRevision, "utf8"), oldContents)
+    assert.deepEqual(await fileNames(oldDirectory), ["0000000000000001.json"])
+    assert.equal((await stat(join(stateRoot, "opencode-debate", privateOwnerKey(project, owner)))).isDirectory(), true)
+  })
 })
 
 test("private storage refuses a non-Linux platform before touching the filesystem", async () => {
@@ -638,24 +657,6 @@ test("compaction publishes a base, then removes superseded revisions", async () 
   } finally {
     await rm(stateRoot, { recursive: true, force: true })
   }
-})
-
-test("legacy source is preserved across appends and compaction", async () => {
-  await withRoot(async (stateRoot) => {
-    const legacy = { storeID: "ses_legacy", revision: 2, head: "msg_legacy_head", digest: "a".repeat(64) }
-    const store = await openPrivateStore(optionsFor(stateRoot))
-    let head = await store.append({ revision: 0, digest: null }, initial, legacy)
-    assert.deepEqual(head.legacy, legacy)
-    head = await store.append({ revision: head.revision, digest: head.digest }, initial)
-    assert.deepEqual(head.legacy, legacy)
-    const base = await store.compact({ revision: head.revision, digest: head.digest }, head.snapshot)
-    assert.deepEqual(base.legacy, legacy)
-    await store.close()
-
-    const reopened = await openPrivateStore(optionsFor(stateRoot))
-    assert.deepEqual((await reopened.load())?.legacy, legacy)
-    await reopened.close()
-  })
 })
 
 test("runtime proof prefixes cannot be removed by a later append", async () => {

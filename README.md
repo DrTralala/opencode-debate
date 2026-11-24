@@ -64,10 +64,9 @@ The conditions under which debates stop can be adjusted in `config.yaml`. See th
 
 ```text
 /debate <topic>
-/debate --rounds 5 <topic> # 5 rounds instead of 3
-/debate --set:cheap <topic> # uses the "cheap" set specified in config.yaml
-/mini-debate <topic> # single debate participant
-/mini-debate --participant <name> <topic> # specify which debate participant (model) to use
+/debate --rounds 5 <topic>
+/debate --set:alt <topic>
+/mini-debate <topic>
 ```
 
 Invalid options produce an error without starting participant subagents.
@@ -80,7 +79,13 @@ Run a debate with only one debate participant in the current session. The main a
 /mini-debate Are there alternative ways to fix this bug?
 ```
 
-This can be further configured in `config.yaml`.
+Choose a participant and round limit with space-separated options:
+
+```text
+/mini-debate --participant debate-glm --rounds 5 Are there alternative ways to fix this bug?
+```
+
+The `--participant:<name>` form remains supported as an alias for `--participant <name>`. The round limit is from 1 to 10; `mini_debate` in `config.yaml` supplies the defaults.
 
 ## Automatic Debates
 
@@ -110,27 +115,11 @@ Participants cannot edit files or launch nested debates. Normal OpenCode permiss
 
 ### Automatic-debate storage
 
-#### Storage location and platform support
+#### Storage location and legacy data
 
-Starting with v3.3.1, new automatic-debate state on Linux is stored in `<state>/opencode-debate/auto-debate/v2/`.
+New private automatic-debate checkpoints on Linux are stored under OpenCode's state directory in `<state>/opencode-debate/`. Existing native checkpoint sessions continue using OpenCode's native checkpoint storage, which is also used on other platforms. The previous `<state>/opencode-debate/auto-debate/v2/` tree is not read, resumed, migrated or modified by this version.
 
-#### Storage management commands
-
-The following commands may only be invoked by the user and do not resume an automatic debate:
-
-```
-/debate-auto storage status
-/debate-auto storage migrate
-/debate-auto storage migrate <token> --writer-handover-confirmed
-/debate-auto storage delete-source
-/debate-auto storage delete-source <native-store-id> <token>
-```
-
-A prepared or incomplete migration, or an incomplete deletion of a retiring native source, must be resumed using the original token and, where applicable, the exact native store ID.
-
-Normal storage operations are blocked until the incomplete operation is resolved.
-
-The `--writer-handover-confirmed` flag confirms that the user has stopped the previous writer and started exactly one replacement writer. It does not resume the debate itself.
+There are no storage-specific `/debate-auto` commands to inspect, migrate or delete these files. Manage any old v2 data outside the plugin.
 
 #### Auditing, compaction and deletion
 
@@ -143,18 +132,7 @@ Storage compaction occurs only when:
 
 Confirmed parent deletion removes the private store only when it is safe to do so and all outstanding activity has been drained. Unresolved containment or receipt evidence is retained and reported rather than deleted.
 
-#### Backup, restoration and rollback protection
-
-Successful backup, restoration and debate resumption require both:
-
-- The native sessions.
-- The corresponding plugin state.
-
-Partial restorations are rejected when the migration boundary, native source or provenance information is present but inconsistent.
-
-If both the private state and the migration boundary maintained outside the revision history are removed entirely, the system cannot distinguish a previously migrated owner from one that has never been migrated. Consequently, this mechanism does not provide complete anti-rollback protection.
-
-Within a single runtime, detected loss of a revision suffix or high-water mark causes the state to be rejected. However, hashes alone cannot detect the removal of an entire revision suffix before a restart.
+Revision chains are checked while the store is in use, but after a restart the plugin cannot distinguish an older, internally valid copy from the latest saved copy.
 
 #### Security and durability limitations
 
@@ -181,6 +159,18 @@ ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode-debate/config.yaml
 ```
 
 If the file is missing, the plugin atomically creates it as an exact copy of the packaged [`config.example.yaml`](config.example.yaml). Existing files are never merged or rewritten, even during upgrades; add new settings yourself. The user file is a complete, authoritative version 2 configuration, not a partial overlay. Version 1 files require migration.
+
+The packaged template's former `cheap` set is now named `alt`, and `auto_debate.set` selects `alt`. Existing user files keep their current set and model values; change them manually if you want the new defaults. Restart OpenCode after editing the file.
+
+The packaged participant models are:
+
+| Participant | Model | Variant |
+| --- | --- | --- |
+| `debate-openai` | `openai/gpt-6.2-astra` | `high` |
+| `debate-glm` | `commandcode/zai-org/GLM-5.3` | `max` |
+| `debate-kimi` | `commandcode/moonshotai/Kimi-K3.1-Pro` | `max` |
+| `debate-anthropic` | `openrouter/anthropic/claude-opus-5.5` | `high` |
+| `debate-qwen` | `commandcode/Qwen/Qwen3.8-Max-Prime` | not set |
 
 Minimal example:
 
@@ -225,7 +215,7 @@ Each completed manual debate writes:
 
 Markdown is canonical; HTML is generated from that same file with sanitised content. Publication is atomic and does not overwrite existing transcripts. It fails closed when it encounters unsafe paths. If HTML generation fails, the Markdown transcript is retained. Regenerate the HTML rather than editing it directly.
 
-Automatic debates save only Markdown transcripts as `docs/debates/auto-<discussion-id>.md`.
+When transcript persistence is enabled, automatic debates save only Markdown transcripts as `docs/debates/auto-YYYY-MM-DD-<question-slug>.md`. If that date-and-slug name belongs to another transcript, the plugin uses a numeric suffix such as `-2` rather than overwriting it; unsafe destination paths fail closed. When a discussion resumes, the plugin appends its verified frames to the existing transcript rather than replacing it.
 
 ## License
 

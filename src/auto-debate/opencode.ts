@@ -7,8 +7,6 @@ import { AUTOMATIC_PARTICIPANT_KEY, assertAutomaticParticipantMarker, automaticP
 import {
   createManagedStore,
   type CompactionResult,
-  type ParticipantQuiescenceVerifier,
-  type QuiescentStart,
   type RuntimeStorageMode,
   type StoreMaintenance,
 } from "./storage.ts"
@@ -229,8 +227,6 @@ export interface NativeRuntime extends Runtime, StoreMaintenance {
   maintenance: StoreMaintenance
   /** Refuse new writes for a deleted parent before any asynchronous cleanup. */
   noteOwnerDeleted(sessionID: string): void
-  /** Record that deletion evidence was retained without exposing store content. */
-  noteOwnerDeletionRetained(sessionID: string): void
   /** Called only by the native tool.execute.before hook, not by tool arguments. */
   noteToolInvocation(input: { tool: string; sessionID: string; callID: string }): void
   discardToolInvocation(context: ToolContext): void
@@ -247,7 +243,7 @@ export function createRuntime(input: PluginInput, options?: { storage?: RuntimeS
   const deletedOwners = new Set<string>()
   const refusals = new Map<string, RefusedInvocation[]>()
   const checkpoints = createManagedStore(input, options?.storage ?? "auto",
-    (owner) => refusals.get(owner.sessionID) ?? [], verifyParticipantQuiescent)
+    (owner) => refusals.get(owner.sessionID) ?? [])
   // Only this instance's freshly created sessions have known startup provenance.
   // Keep stopped records as tombstones; never adopt recovered sessions from idle alone.
   const participants = new Map<string, ParticipantState>()
@@ -595,104 +591,12 @@ export function createRuntime(input: PluginInput, options?: { storage?: RuntimeS
     return { session, info, part, invocation }
   }
 
-  async function verifyParticipantQuiescent(
-    owner: Owner,
-    member: PanelMember,
-    proof: Extract<RuntimeReceipt, { kind: "member-bound" }>,
-    starts: readonly QuiescentStart[],
-  ): Promise<{ exhausted: boolean; reason?: string }> {
-    try {
-      if (JSON.stringify(proof.member) !== JSON.stringify(member)) {
-        return { exhausted: false, reason: "the member-bound receipt does not match the saved participant" }
-      }
-      const startIDs = new Set<string>()
-      for (const start of starts) {
-        if (start.open.sessionID !== member.sessionID || start.open.discussionID !== proof.discussionID) {
-          return { exhausted: false, reason: "participant startup evidence belongs to another owner or discussion" }
-        }
-        if (!start.closed) return { exhausted: false, reason: "participant startup is not closed" }
-        if (startIDs.has(start.open.messageID)) {
-          return { exhausted: false, reason: "participant startup evidence is duplicated" }
-        }
-        startIDs.add(start.open.messageID)
-      }
-
-      await readOwner(owner)
-      const native = await readParticipant(member)
-      assertAutomaticParticipantMarker(native, owner, input.project.id, proof.nonce)
-      if (JSON.stringify(native.permission) !== JSON.stringify(proof.permission)) {
-        return { exhausted: false, reason: "participant permission identity changed" }
-      }
-      const statuses = responseData<unknown>(await input.client.session.status({
-        query: { directory: input.directory },
-      }), "participant quiescence status")
-      if (!isRecord(statuses)) return { exhausted: false, reason: "participant status is unavailable" }
-      const status = statuses[member.sessionID]
-      if (status !== undefined && (!isRecord(status) || status.type !== "idle")) {
-        return { exhausted: false, reason: "participant native work is not idle" }
-      }
-      const messages = responseData<unknown>(await input.client.session.messages({
-        path: { id: member.sessionID },
-        query: { directory: input.directory },
-      }), "participant quiescence history")
-      if (!Array.isArray(messages)) return { exhausted: false, reason: "participant history is unavailable" }
-
-      const users = new Set<string>()
-      const assistants = new Set<string>()
-      for (const value of messages) {
-        const message = nativeMessage(value)
-        const info = message.info
-        if (!nonEmptyString(info.id) || info.sessionID !== member.sessionID
-          || (info.role !== "user" && info.role !== "assistant")) {
-          return { exhausted: false, reason: "participant history binding is invalid" }
-        }
-        if (message.parts.some((part) => !isRecord(part) || !nonEmptyString(part.id)
-          || part.sessionID !== member.sessionID || part.messageID !== info.id)) {
-          return { exhausted: false, reason: "participant history part binding is invalid" }
-        }
-        if (info.role === "user") {
-          const start = starts.find((candidate) => candidate.open.messageID === info.id)
-          if (!start || start.closed?.startup === "never-invoked" || users.has(info.id)
-            || info.agent !== member.runtimeAgent || !sameModel(info.model, member.participant)
-            || message.parts.length !== 1 || !isRecord(message.parts[0]) || message.parts[0].type !== "text"
-            || typeof message.parts[0].text !== "string"
-            || createHash("sha256").update(message.parts[0].text).digest("hex") !== start.open.textDigest) {
-            return { exhausted: false, reason: "participant has unknown or changed startup history" }
-          }
-          users.add(info.id)
-          continue
-        }
-        const start = starts.find((candidate) => candidate.open.messageID === info.parentID)
-        if (!start || start.closed?.startup === "never-invoked" || !isRecord(info.time)
-          || typeof info.time.completed !== "number" || assistants.has(info.id)
-          || message.parts.some((part) => isRecord(part) && part.type === "tool"
-            && (!isRecord(part.state) || !["completed", "error"].includes(String(part.state.status))))) {
-          return { exhausted: false, reason: "participant has unknown or unfinished assistant work" }
-        }
-        if (start.closed?.outcome === "answer" && start.closed.assistantID !== info.id) {
-          return { exhausted: false, reason: "participant terminal history does not match its saved answer" }
-        }
-        assistants.add(info.id)
-      }
-      for (const start of starts) {
-        if (start.closed?.outcome === "answer"
-          && (!users.has(start.open.messageID) || !assistants.has(start.closed.assistantID!))) {
-          return { exhausted: false, reason: "participant terminal history is missing" }
-        }
-      }
-      return { exhausted: true }
-    } catch (error) {
-      return { exhausted: false, reason: error instanceof Error ? error.message : "participant evidence is unavailable" }
-    }
-  }
-
   const runtime: NativeRuntime = {
     maintenance: {} as StoreMaintenance,
     noteOwnerDeleted: (sessionID) => {
       if (typeof sessionID === "string" && sessionID.trim().length > 0) deletedOwners.add(sessionID)
       checkpoints.noteOwnerDeleted(sessionID)
     },
-    noteOwnerDeletionRetained: (sessionID) => checkpoints.noteOwnerDeletionRetained(sessionID),
     noteToolInvocation: ({ tool, sessionID, callID }) => {
       if (tool === "auto_debate" && nonEmptyString(sessionID) && nonEmptyString(callID)) {
         invocations.add(invocationKey(sessionID, callID))
@@ -1164,31 +1068,6 @@ export function createRuntime(input: PluginInput, options?: { storage?: RuntimeS
       })
     },
 
-    migrationPreview: (owner) => withSaveLock(owner.sessionID, async () => {
-      await readOwner(owner)
-      return checkpoints.maintenance.migrationPreview(owner)
-    }),
-
-    migrate: (owner, token) => withSaveLock(owner.sessionID, async () => {
-      await readOwner(owner)
-      return checkpoints.maintenance.migrate(owner, token)
-    }),
-
-    sourceDeletionPreview: (owner) => withSaveLock(owner.sessionID, async () => {
-      await readOwner(owner)
-      return checkpoints.maintenance.sourceDeletionPreview(owner)
-    }),
-
-    deleteSource: (owner, storeID, token) => withSaveLock(owner.sessionID, async () => {
-      await readOwner(owner)
-      return checkpoints.maintenance.deleteSource(owner, storeID, token)
-    }),
-
-    status: (owner) => withSaveLock(owner.sessionID, async () => {
-      await readOwner(owner)
-      return checkpoints.maintenance.status(owner)
-    }),
-
     reconcileDeletedOwner: (sessionID) => {
       // The tombstone is recorded synchronously before the writer queue so a
       // concurrent save cannot race ahead of the deletion decision.
@@ -1203,15 +1082,8 @@ export function createRuntime(input: PluginInput, options?: { storage?: RuntimeS
       withSaveLock(owner.sessionID, () => checkpoints.maintenance.compactIfEligible(owner, predicate)),
   }
   runtime.maintenance = {
-    migrationPreview: runtime.migrationPreview,
-    migrate: runtime.migrate,
-    sourceDeletionPreview: runtime.sourceDeletionPreview,
-    deleteSource: runtime.deleteSource,
     reconcileDeletedOwner: runtime.reconcileDeletedOwner,
     reconcileOrphanedStores: runtime.reconcileOrphanedStores,
-    // The raw status deliberately skips owner liveness so retained deletion
-    // evidence can still be inspected after the parent has disappeared.
-    status: (owner) => checkpoints.maintenance.status(owner),
     compactIfEligible: runtime.compactIfEligible,
   }
   return runtime

@@ -45,6 +45,7 @@ export type StorageBinding = Readonly<{
   agent: string
 }>
 
+/** Wire shape retained only to recognise and refuse native stores marked by older releases. */
 export type LegacySource = Readonly<{
   storeID: string
   revision: number
@@ -52,19 +53,7 @@ export type LegacySource = Readonly<{
   digest: string
 }>
 
-export type MigrationBoundary = Readonly<{
-  kind: "opencode-debate-migration-boundary"
-  version: 1
-  state: "prepared" | "committed" | "retiring" | "retired"
-  project: string
-  directory: string
-  owner: string
-  agent: string
-  source: LegacySource
-  private: { revision: number; digest: string }
-  token: string
-}>
-
+/** Refusal-only compatibility marker; current code never writes or deletes it. */
 export type NativeMigrationMarker = Readonly<{
   kind: "opencode-debate-migrated"
   version: 1
@@ -74,14 +63,10 @@ export type NativeMigrationMarker = Readonly<{
   token: string
 }>
 
-export type StorageMode = "auto" | "native"
-export type StorageBackend = "native" | "private" | "new-private" | "none"
-
 export type StorageSelection =
   | { kind: "native" }
   | { kind: "private" }
   | { kind: "new-private" }
-  | { kind: "none" }
   | { kind: "conflict"; reason: string }
 
 export type PanelMember = Readonly<{

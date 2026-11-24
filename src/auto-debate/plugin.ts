@@ -7,7 +7,7 @@ import { runResponseFormatter } from "../response-formatter.ts"
 import { AUTOMATIC_PARTICIPANT_PREFIX, discussionAudit, discussionSummary } from "./audit.ts"
 import { createManager, type Manager } from "./manager.ts"
 import { MAIN_AGENT_INSTRUCTIONS } from "./prompts.ts"
-import { parseControl, roundBudget, type StorageCommand } from "./state.ts"
+import { parseControl, roundBudget } from "./state.ts"
 import { createRuntime } from "./opencode.ts"
 import { checkpointTranscript } from "./transcripts.ts"
 import type { Brief, Discussion, Evaluation, Owner, OwnerPermissionSnapshot, Rule, Runtime } from "./types.ts"
@@ -404,87 +404,6 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
       checkRuntimeDenials(await runtime.assertOwner(owner), pattern)
     }
 
-    function storageLines(value: PlainRecord): string {
-      return Object.entries(value).map(([key, item]) => `${key}: ${typeof item === "string" ? item : JSON.stringify(item)}`).join("\n")
-    }
-
-    async function storageResponse(owner: Owner, command: StorageCommand): Promise<string> {
-      await authorizeOwner(owner)
-      // No state path, native store or private inventory is touched off Linux.
-      if (process.platform !== "linux") {
-        throw new Error("Automatic-debate storage maintenance is unsupported on this platform")
-      }
-      return manager.withMaintenance(owner, async () => {
-        switch (command.action) {
-          case "status": {
-            const status = await runtime.status(owner)
-            return `${storageLines(status as unknown as PlainRecord)}\n\nNo debate was resumed and no model work was started.`
-          }
-          case "migrate": {
-            if (command.token === undefined) {
-              const preview = await runtime.migrationPreview(owner)
-              return [
-                "Automatic-debate migration preview.",
-                `Owner session: ${preview.ownerSessionID}`,
-                `Agent: ${preview.agent}`,
-                `Native store: ${preview.source.storeID}`,
-                `Source revision: ${preview.source.revision}`,
-                `Source head: ${preview.source.head}`,
-                `Source digest: ${preview.source.digest}`,
-                `Lifecycle: ${preview.lifecycle.map((entry) => `${entry.discussionID}=${entry.status}`).join(", ") || "none"}`,
-                "Intended: private revision 1 with a prepared migration boundary.",
-                `Token: ${preview.token}`,
-                `Run: /${AUTOMATIC_DEBATE_COMMAND} ${preview.command}`,
-                "",
-                "No files or state were changed. No debate was resumed and no model work was started.",
-              ].join("\n")
-            }
-            if (command.confirmation !== "writer-handover-confirmed") {
-              throw new Error("Migration execution requires the explicit writer-handover confirmation")
-            }
-            const result = await runtime.migrate(owner, command.token)
-            return [
-              "Automatic-debate migration committed.",
-              `Native store: ${result.source.storeID} revision ${result.source.revision}`,
-              `Private revision: ${result.privateRevision}`,
-              `Private digest: ${result.privateDigest}`,
-              `Run: /${AUTOMATIC_DEBATE_COMMAND} storage delete-source`,
-              "",
-              "No debate was resumed and no model work was started.",
-            ].join("\n")
-          }
-          case "delete-source": {
-            if (command.storeID === undefined && command.token === undefined) {
-              const preview = await runtime.sourceDeletionPreview(owner)
-              return [
-                "Automatic-debate source deletion preview.",
-                `Native store: ${preview.source.storeID}`,
-                `Source revision: ${preview.source.revision}`,
-                `Source head: ${preview.source.head}`,
-                `Source digest: ${preview.source.digest}`,
-                `Private revision: ${preview.private.revision}`,
-                `Private digest: ${preview.private.digest}`,
-                `Token: ${preview.token}`,
-                `Run: /${AUTOMATIC_DEBATE_COMMAND} ${preview.command}`,
-                "",
-                "No files or state were changed. No debate was resumed and no model work was started.",
-              ].join("\n")
-            }
-            if (command.storeID === undefined || command.token === undefined) {
-              throw new Error("Source deletion requires both the exact native store ID and token")
-            }
-            await runtime.deleteSource(owner, command.storeID, command.token)
-            return [
-              "Automatic-debate source deleted and migration retired.",
-              `Native store: ${command.storeID}`,
-              "",
-              "No debate was resumed and no model work was started.",
-            ].join("\n")
-          }
-        }
-      })
-    }
-
     async function activateOwner(owner: Owner, pattern?: string): Promise<void> {
       await authorizeOwner(owner, pattern)
       owners.set(owner.sessionID, structuredClone(owner))
@@ -640,11 +559,6 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
         try {
           const parsed = parseControl(command.arguments)
           const owner = await ownerFromCommand(command.sessionID)
-          if (parsed.action === "storage") {
-            const result = await storageResponse(owner, parsed.command)
-            replaceParts(output, `${result}\n\nDo not start a debate just to answer this command.`)
-            return
-          }
           await activateOwner(owner)
           const result = await manager.control(owner, parsed)
           replaceParts(output, `${result}\n\nDo not start a debate just to answer this command.`)
@@ -667,16 +581,12 @@ export function createAutomaticDebatePlugin(registry: DebateRegistry): Plugin {
               // maintenance hold. A child event has no matching owner store.
               let contained = true
               try { await manager.onDeleted(sessionID) } catch { contained = false }
-              if (!contained) {
-                runtime.noteOwnerDeletionRetained(sessionID)
-              } else {
+              if (contained) {
                 try {
                   await manager.withMaintenance(owner, () =>
                     runtime.maintenance.reconcileDeletedOwner(sessionID))
                 } catch {
-                  // Containment/write uncertainty retains the store and records a
-                  // content-free issue rather than claiming deletion succeeded.
-                  runtime.noteOwnerDeletionRetained(sessionID)
+                  // Containment/write uncertainty retains the store rather than claiming deletion succeeded.
                 }
               }
             } else {

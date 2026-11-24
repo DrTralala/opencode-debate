@@ -123,7 +123,7 @@ async function waitFor<T>(
 }
 
 function compactionOwnerDirectory(f: CompactionFixture, owner: Owner = f.owner): string {
-  return join(f.stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(f.projectID, owner))
+  return join(f.stateRoot, "opencode-debate", privateOwnerKey(f.projectID, owner))
 }
 
 async function revisionNames(f: CompactionFixture, owner: Owner = f.owner): Promise<string[]> {

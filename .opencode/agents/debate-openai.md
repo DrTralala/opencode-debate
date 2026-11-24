@@ -2,7 +2,7 @@
 description: Neutral debate participant from OpenAI
 mode: subagent
 hidden: true
-model: openai/gpt-6-astra
+model: openai/gpt-6.2-astra
 variant: high
 permission:
   "*": "deny"

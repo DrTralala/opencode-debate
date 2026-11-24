@@ -1,5 +1,5 @@
 ---
-description: Run a bounded mini-debate with one neutral participant in this session
+description: "Run /mini-debate [--participant <name>] [--rounds <1-10>] <topic>"
 ---
 
 $ARGUMENTS

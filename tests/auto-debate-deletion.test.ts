@@ -6,10 +6,8 @@ import { createManager } from "../src/auto-debate/manager.ts"
 import { createRuntime } from "../src/auto-debate/opencode.ts"
 import { createAutomaticDebatePlugin } from "../src/auto-debate/plugin.ts"
 import {
-  migrationBoundaryPath,
   openPrivateStore,
   privateOwnerKey,
-  writeMigrationBoundary,
 } from "../src/auto-debate/private-store.ts"
 import { selectStorageBackend } from "../src/auto-debate/storage.ts"
 import type { DebateRegistry } from "../src/participants.ts"
@@ -17,7 +15,6 @@ import type {
   CheckpointSnapshot,
   ConversationState,
   Discussion,
-  MigrationBoundary,
   NativeMigrationMarker,
   Owner,
   PanelMember,
@@ -45,12 +42,12 @@ const registry: DebateRegistry = {
 }
 
 function ownerStorePath(f: Fixture, owner: Owner): string {
-  return join(f.stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(f.projectID, owner))
+  return join(f.stateRoot, "opencode-debate", privateOwnerKey(f.projectID, owner))
 }
 
 async function ownerExists(f: Fixture, owner: Owner, project = f.projectID): Promise<boolean> {
   try {
-    await stat(join(f.stateRoot, "opencode-debate", "auto-debate", "v2", privateOwnerKey(project, owner)))
+    await stat(join(f.stateRoot, "opencode-debate", privateOwnerKey(project, owner)))
     return true
   } catch {
     return false
@@ -67,21 +64,6 @@ async function seedPrivate(f: Fixture, snapshot: CheckpointSnapshot = initialSna
   const store = await openPrivateStore({ stateRoot: f.stateRoot, project: f.projectID, owner })
   await store.append({ revision: 0, digest: null }, snapshot)
   await store.close()
-}
-
-async function seedBoundary(f: Fixture, owner: Owner): Promise<void> {
-  await writeMigrationBoundary(f.stateRoot, {
-    kind: "opencode-debate-migration-boundary",
-    version: 1,
-    state: "committed",
-    project: f.projectID,
-    directory: owner.directory,
-    owner: owner.sessionID,
-    agent: owner.agent,
-    source: { storeID: "native-source", revision: 1, head: "head", digest: "a".repeat(64) },
-    private: { revision: 1, digest: "b".repeat(64) },
-    token: "c".repeat(64),
-  })
 }
 
 function deferred<T = void>() {
@@ -127,7 +109,6 @@ async function assertCleanupSerialised(first: Cleanup, second: Cleanup): Promise
     const owner = { ...f.owner }
     addSession(f, owner)
     await seedPrivate(f, initialSnapshot, owner)
-    await seedBoundary(f, owner)
     f.sessions.delete(owner.sessionID)
     const runtime = createRuntime(f.input, { storage: "auto" })
     const gate = holdFirstPathLookup(f)
@@ -141,7 +122,6 @@ async function assertCleanupSerialised(first: Cleanup, second: Cleanup): Promise
     assert.equal(lookupsWhileHeld, 1, `${first} cleanup must hold ${second} cleanup before inspection`)
     assert.equal(gate.lookups(), 1, "the queued cleanup must reuse the first resolved state root")
     assert.equal(await ownerExists(f, owner), false)
-    await assert.rejects(stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner)), /ENOENT/)
     assert.equal(f.modelCalls(), 0)
   } finally {
     await f.cleanup()
@@ -327,33 +307,6 @@ test("startup reconciliation removes a missed safe parent store and leaves other
 
 const unsafeOwner: Owner = { sessionID: "unsafe-owner", agent: "build", directory: "/unsafe-directory" }
 
-test("startup reconciliation completes a safely interrupted boundary-only cleanup", async () => {
-  const f = await privateStorageClient()
-  try {
-    const owner = { ...f.owner }
-    const boundary: MigrationBoundary = {
-      kind: "opencode-debate-migration-boundary",
-      version: 1,
-      state: "committed",
-      project: f.projectID,
-      directory: owner.directory,
-      owner: owner.sessionID,
-      agent: owner.agent,
-      source: { storeID: "native-source", revision: 1, head: "head", digest: "a".repeat(64) },
-      private: { revision: 1, digest: "b".repeat(64) },
-      token: "c".repeat(64),
-    }
-    await writeMigrationBoundary(f.stateRoot, boundary)
-    f.sessions.delete(owner.sessionID)
-
-    await createRuntime(f.input, { storage: "auto" }).maintenance.reconcileOrphanedStores()
-    await assert.rejects(stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner)), /ENOENT/)
-    assert.equal(f.modelCalls(), 0)
-  } finally {
-    await f.cleanup()
-  }
-})
-
 test("startup reconciliation completes before an overlapping deleted-owner cleanup inspects the store", async () => {
   await assertCleanupSerialised("scan", "event")
 })
@@ -368,7 +321,6 @@ test("simultaneous startup and deleted-owner cleanups share one serialised queue
     const owner = { ...f.owner }
     addSession(f, owner)
     await seedPrivate(f, initialSnapshot, owner)
-    await seedBoundary(f, owner)
     f.sessions.delete(owner.sessionID)
     const runtime = createRuntime(f.input, { storage: "auto" })
     const gate = holdFirstPathLookup(f)
@@ -387,14 +339,13 @@ test("simultaneous startup and deleted-owner cleanups share one serialised queue
     assert.equal(lookupsWhileHeld, 1)
     assert.equal(gate.lookups(), 1)
     assert.equal(await ownerExists(f, owner), false)
-    await assert.rejects(stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner)), /ENOENT/)
     assert.equal(f.modelCalls(), 0)
   } finally {
     await f.cleanup()
   }
 })
 
-test("a missing parent with unresolved private evidence is retained and reported", async () => {
+test("a missing parent with unresolved private evidence is retained", async () => {
   for (const scenario of unsafeSnapshots(unsafeOwner)) {
     const f = await privateStorageClient()
     try {
@@ -407,12 +358,6 @@ test("a missing parent with unresolved private evidence is retained and reported
 
       await runtime.maintenance.reconcileDeletedOwner(owner.sessionID)
       assert.equal(await ownerExists(f, owner), true, scenario.name)
-      const status = await runtime.maintenance.status(owner)
-      assert.ok(status.issues.length > 0, scenario.name)
-      for (const issue of status.issues) {
-        assert.equal(issue.includes("private question"), false, scenario.name)
-        assert.equal(issue.includes(owner.sessionID), false, scenario.name)
-      }
       assert.equal(f.modelCalls(), 0, scenario.name)
     } finally {
       await f.cleanup()
@@ -452,8 +397,6 @@ test("a loaded paused owner is retained when tombstoning prevents containment pe
       runtime.maintenance.reconcileDeletedOwner(owner.sessionID))
 
     assert.equal(await ownerExists(f, owner), true)
-    const status = await runtime.maintenance.status(owner)
-    assert.ok(status.issues.length > 0)
     assert.equal(f.modelCalls(), 0)
   } finally {
     await manager.dispose()
@@ -494,43 +437,6 @@ test("a no-head owner directory is retained as evidence instead of erased", asyn
     await runtime.maintenance.reconcileDeletedOwner(owner.sessionID)
     assert.equal(await ownerExists(f, owner), true)
     assert.equal((await stat(pending)).isFile(), true)
-    const status = await runtime.maintenance.status(owner)
-    assert.ok(status.issues.length > 0)
-    assert.equal(f.modelCalls(), 0)
-  } finally {
-    await f.cleanup()
-  }
-})
-
-test("a no-head owner with a complete boundary is retained by startup reconciliation", async () => {
-  const f = await privateStorageClient()
-  try {
-    const owner = { ...f.owner }
-    const boundary: MigrationBoundary = {
-      kind: "opencode-debate-migration-boundary",
-      version: 1,
-      state: "committed",
-      project: f.projectID,
-      directory: owner.directory,
-      owner: owner.sessionID,
-      agent: owner.agent,
-      source: { storeID: "native-source", revision: 1, head: "head", digest: "a".repeat(64) },
-      private: { revision: 1, digest: "b".repeat(64) },
-      token: "c".repeat(64),
-    }
-    await writeMigrationBoundary(f.stateRoot, boundary)
-    const directory = ownerStorePath(f, owner)
-    await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "EEXIST") throw error
-    })
-    f.sessions.delete(owner.sessionID)
-    const runtime = createRuntime(f.input, { storage: "auto" })
-
-    await runtime.maintenance.reconcileOrphanedStores()
-    assert.equal(await ownerExists(f, owner), true)
-    assert.equal((await stat(migrationBoundaryPath(f.stateRoot, f.projectID, owner))).isFile(), true)
-    const status = await runtime.maintenance.status(owner)
-    assert.ok(status.issues.length > 0)
     assert.equal(f.modelCalls(), 0)
   } finally {
     await f.cleanup()
@@ -551,8 +457,6 @@ test("a missing parent is not proven by absent data or an empty child listing", 
     await runtime.maintenance.reconcileDeletedOwner(owner.sessionID)
     assert.equal(await ownerExists(f, owner), true)
     assert.deepEqual(await f.session.children({ path: { id: owner.sessionID } }), { data: [] })
-    const status = await runtime.maintenance.status(owner)
-    assert.ok(status.issues.length > 0)
     assert.equal(f.modelCalls(), 0)
   } finally {
     await f.cleanup()
@@ -575,7 +479,7 @@ test("deleting a child session never removes the parent private store", async ()
   }
 })
 
-test("403, 500, timeout and unavailable parent lookups retain the store and report an issue", async () => {
+test("403, 500, timeout and unavailable parent lookups retain the store", async () => {
   const scenarios: { name: string; lookup: () => Promise<unknown> | unknown }[] = [
     { name: "403", lookup: () => ({ error: { name: "ForbiddenError" }, response: new Response(null, { status: 403 }) }) },
     { name: "500", lookup: () => ({ error: { name: "InternalServerError" }, response: new Response(null, { status: 500 }) }) },
@@ -595,8 +499,6 @@ test("403, 500, timeout and unavailable parent lookups retain the store and repo
 
       await runtime.maintenance.reconcileDeletedOwner(owner.sessionID)
       assert.equal(await ownerExists(f, owner), true, scenario.name)
-      const status = await runtime.maintenance.status(owner)
-      assert.ok(status.issues.length > 0, scenario.name)
       assert.equal(f.modelCalls(), 0, scenario.name)
     } finally {
       await f.cleanup()
@@ -640,8 +542,6 @@ test("symlinked entries, hard-linked revisions and unexpected files are retained
 
       await runtime.maintenance.reconcileDeletedOwner(owner.sessionID)
       assert.equal(await ownerExists(f, owner), true, scenario.name)
-      const status = await runtime.maintenance.status(owner)
-      assert.ok(status.issues.length > 0, scenario.name)
       if (scenario.name === "hard-linked revision") {
         assert.equal((await stat(join(f.stateRoot, "hard-link-sentinel"))).nlink, 2)
       }
@@ -706,7 +606,7 @@ test("the plugin session.deleted hook reconciles an unloaded safe owner without 
   }
 })
 
-test("a migrated private store is not resurrected as native state after parent deletion", async () => {
+test("a deleted private store is not resurrected as native state after parent deletion", async () => {
   const f = await privateStorageClient()
   try {
     const owner = { ...f.owner }
